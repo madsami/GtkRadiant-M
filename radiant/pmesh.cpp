@@ -3664,9 +3664,11 @@ void Patch_DrawCam( patchMesh_t *pm ){
 
    A "regular" patch ring (off-curve control points on the corners of its box) is easy to deform by
    hand, but bulges past the true curve. Patch_ComputeRounded() produces the improved version of
-   any patch: each off-curve column point is pulled towards the midpoint of its two on-curve
-   neighbours by an amount that depends on the arc angle (about 15% for a 90 degree arc, which is
-   the same result as the Improved Cylinder), then rounded to whole units.
+   any patch: the regular position of each off-curve column point is rebuilt from the on-curve
+   points alone (where the tangents meet), ignoring where the point is now, and pulled towards the
+   midpoint of its two on-curve neighbours by an amount that depends on the arc angle (about 15%
+   for a 90 degree arc, which is the same result as the Improved Cylinder), then rounded to whole
+   units.
 
    The result is shown as a ghost over selected patches (g_bPatchRoundHint) and can be applied
    with Patch_RoundSelected(). Arcs that are almost flat (nothing to round) or very wide are left
@@ -3687,11 +3689,38 @@ struct roundedCtrl_t
 // so the shared patchMesh_t layout is untouched. Not saved with the map.
 static std::map<const patchMesh_t*, roundedCtrl_t> g_patchHints;
 
+// unit vector from a to b; false if they coincide
+static bool Patch_DirTo( const float *a, const float *b, vec3_t out ){
+	VectorSubtract( b, a, out );
+	float l = sqrtf( DotProduct( out, out ) );
+	if ( l < 0.001f ) {
+		return false;
+	}
+	for ( int n = 0; n < 3; n++ )
+		out[n] /= l;
+	return true;
+}
+
+// Rounds the off-curve points of every row. Where they are now is ignored: for each arc the
+// "regular" position is rebuilt from the on-curve points alone (the corner where the tangents at
+// the two ends meet, which is where the regular cylinder puts it), and the rounding is applied to
+// that. So already rounded or hand-edited points are not rounded a second time, and the result is
+// the same however many times it is applied.
 static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out ){
 	const float minArc = 0.15f;  // ~9 degrees
 	const float maxArc = 1.75f;  // ~100 degrees
 	bool changed = false;
 	int i, j;
+
+	// snap to the current grid, but never coarser than a whole unit (a bigger step would
+	// distort the circle more than the rounding gains)
+	float step = g_qeglobals.d_gridsize;
+	if ( step > 1.0f ) {
+		step = 1.0f;
+	}
+	if ( step < 0.0625f ) {
+		step = 0.0625f;
+	}
 
 	out->width = p->width;
 	out->height = p->height;
@@ -3699,45 +3728,114 @@ static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out ){
 		for ( j = 0; j < p->height; j++ )
 			VectorCopy( p->ctrl[i][j].xyz, out->v[i][j] );
 
-	for ( i = 1; i < p->width - 1; i += 2 )
+	// needs three on-curve points in a row to tell which way the curve bends
+	if ( p->width < 5 || ( p->width & 1 ) == 0 ) {
+		return false;
+	}
+	const int n = ( p->width + 1 ) / 2; // on-curve points per row
+
+	for ( j = 0; j < p->height; j++ )
 	{
-		for ( j = 0; j < p->height; j++ )
+		vec3_t q[MAX_PATCH_WIDTH];
+		vec3_t tg[MAX_PATCH_WIDTH]; // unit tangent at each on-curve point, in the direction of the row
+		bool ok[MAX_PATCH_WIDTH];
+		int k;
+
+		for ( k = 0; k < n; k++ )
 		{
-			const float *P0 = p->ctrl[i - 1][j].xyz;
-			const float *C  = p->ctrl[i][j].xyz;
-			const float *P2 = p->ctrl[i + 1][j].xyz;
-			vec3_t a, b;
-			VectorSubtract( P0, C, a );
-			VectorSubtract( P2, C, b );
-			float la = sqrtf( DotProduct( a, a ) );
-			float lb = sqrtf( DotProduct( b, b ) );
-			if ( la < 0.001f || lb < 0.001f ) {
+			VectorCopy( p->ctrl[2 * k][j].xyz, q[k] );
+			ok[k] = false;
+		}
+
+		vec3_t d;
+		VectorSubtract( q[0], q[n - 1], d );
+		bool closed = DotProduct( d, d ) < 0.25f;
+		if ( closed && n < 4 ) {
+			continue;
+		}
+
+		if ( closed ) {
+			const int m = n - 1; // distinct points
+			for ( k = 0; k < m; k++ )
+				ok[k] = Patch_DirTo( q[( k + m - 1 ) % m], q[( k + 1 ) % m], tg[k] );
+			VectorCopy( tg[0], tg[m] );
+			ok[m] = ok[0];
+		}
+		else
+		{
+			for ( k = 1; k < n - 1; k++ )
+				ok[k] = Patch_DirTo( q[k - 1], q[k + 1], tg[k] );
+			// open ends: mirror the tangent of the neighbour in the chord, as on a circle
+			for ( int e = 0; e < 2; e++ )
+			{
+				int end = e ? n - 1 : 0;
+				int nb = e ? n - 2 : 1;
+				vec3_t c;
+				if ( ok[nb] && Patch_DirTo( q[end], q[nb], c ) ) {
+					float dp = 2.0f * DotProduct( tg[nb], c );
+					for ( int a = 0; a < 3; a++ )
+						tg[end][a] = dp * c[a] - tg[nb][a];
+					ok[end] = true;
+				}
+			}
+		}
+
+		for ( k = 0; k < n - 1; k++ )
+		{
+			if ( !ok[k] || !ok[k + 1] ) {
 				continue;
 			}
-			float cosPhi = DotProduct( a, b ) / ( la * lb );
-			if ( cosPhi > 1.0f ) {
-				cosPhi = 1.0f;
+			const float *A = q[k];
+			const float *B = q[k + 1];
+			const float *u = tg[k];
+			const float *v = tg[k + 1];
+
+			float cosT = DotProduct( u, v );
+			if ( cosT > 1.0f ) {
+				cosT = 1.0f;
 			}
-			if ( cosPhi < -1.0f ) {
-				cosPhi = -1.0f;
+			if ( cosT < -1.0f ) {
+				cosT = -1.0f;
 			}
-			float theta = 3.14159265f - acosf( cosPhi ); // angle of the arc
+			float theta = acosf( cosT ); // angle of the arc
 			if ( theta < minArc || theta > maxArc ) {
 				continue;
 			}
+
+			// where the tangents at A and B meet: A + s*u and B + t*v
+			vec3_t w0;
+			VectorSubtract( A, B, w0 );
+			float b = cosT;
+			float dd = DotProduct( u, w0 );
+			float ee = DotProduct( v, w0 );
+			float den = 1.0f - b * b;
+			if ( den < 1e-4f ) {
+				continue;
+			}
+			float s = ( b * ee - dd ) / den;
+			float t = ( ee - b * dd ) / den;
+			vec3_t chord;
+			VectorSubtract( B, A, chord );
+			float chordLen = sqrtf( DotProduct( chord, chord ) );
+			if ( s < 0.0f || t > 0.0f || s > 2.0f * chordLen || -t > 2.0f * chordLen ) {
+				continue; // not a sane corner (S bend or the like)
+			}
+
 			float c = cosf( theta * 0.5f );
 			float e0 = ( c + 1.0f / c ) * 0.5f - 1.0f;    // radial error of the plain layout at mid arc
-			float k = 1.0f - 1.75f * e0 * c;              // fraction of the way from the arc centre to the corner
-			float s = ( 1.0f - k ) / ( 1.0f - c * c );    // pull towards the chord midpoint
+			float kk = 1.0f - 1.75f * e0 * c;             // fraction of the way from the arc centre to the corner
+			float sc = ( 1.0f - kk ) / ( 1.0f - c * c );  // pull towards the chord midpoint
 
-			for ( int n = 0; n < 3; n++ )
+			i = 2 * k + 1;
+			for ( int a = 0; a < 3; a++ )
 			{
-				float mid = ( P0[n] + P2[n] ) * 0.5f;
-				float v = floorf( C[n] + s * ( mid - C[n] ) + 0.5f );
-				if ( v != C[n] ) {
+				float corner = 0.5f * ( ( A[a] + s * u[a] ) + ( B[a] + t * v[a] ) );
+				float mid = ( A[a] + B[a] ) * 0.5f;
+				float val = floorf( ( corner + sc * ( mid - corner ) ) / step + 0.5f ) * step;
+				if ( val != p->ctrl[i][j].xyz[a] ) {
 					changed = true;
 				}
-				out->v[i][j][n] = v;
+				out->v[i][j][a] = val;
 			}
 		}
 	}

@@ -612,6 +612,14 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_BRUSH_MAKECONE: g_pParentWnd->OnBrushMakecone(); break;
 		  case ID_BRUSH_PRIMITIVES_SPHERE: g_pParentWnd->OnBrushPrimitivesSphere(); break;
 		  case ID_CURVE_PATCHTUBE: g_pParentWnd->OnCurvePatchtube(); break;
+		  case ID_CURVE_PATCHIMPROVEDTUBE: g_pParentWnd->OnCurvePatchimprovedtube(); break;
+		  case ID_CURVE_PATCHIMPROVEDENDCAP: g_pParentWnd->OnCurvePatchimprovedendcap(); break;
+		  case ID_CURVE_PATCHIMPROVEDBEVEL: g_pParentWnd->OnCurvePatchimprovedbevel(); break;
+		  case ID_CURVE_PATCHIMPROVEDCONE: g_pParentWnd->OnCurvePatchimprovedcone(); break;
+		  case ID_CURVE_ROUNDHINT: g_pParentWnd->OnCurveRoundhint(); break;
+		  case ID_CURVE_ROUNDSELECTED: g_pParentWnd->OnCurveRoundselected(); break;
+		  case ID_CURVE_SETHINT: g_pParentWnd->OnCurveSethint(); break;
+		  case ID_CURVE_PATCHHINTEDTUBE: g_pParentWnd->OnCurvePatchhintedtube(); break;
 		  case ID_CURVE_PATCHDENSETUBE: g_pParentWnd->OnCurvePatchdensetube(); break;
 		  case ID_CURVE_PATCHVERYDENSETUBE: g_pParentWnd->OnCurvePatchverydensetube(); break;
 		  case ID_CURVE_PATCHSQUARE: g_pParentWnd->OnCurvePatchsquare(); break;
@@ -790,6 +798,35 @@ static void mainframe_destroy( GtkWidget *widget, gpointer data ){
 	gtk_main_quit();
 }
 
+/*
+   WASD fly controls for the camera while freelook is active (right mouse button in the camera view).
+   W/S forward/back, A/D strafe left/right, E/Q up/down. These keys keep their normal bindings
+   (Surface Inspector, camera up/down, ...) outside of freelook, so nothing else is taken over.
+   Returns true if the key was one of ours and has been handled.
+ */
+static bool HandleFreeLookKey( unsigned int code, unsigned int state, bool keydown ){
+	MainFrame *frame = g_pParentWnd;
+	if ( frame == NULL || frame->GetCamWnd() == NULL || !frame->GetCamWnd()->m_bFreeMove ) {
+		return false;
+	}
+	// leave Ctrl+<key> / Alt+<key> shortcuts alone
+	if ( ( state & GDK_CONTROL_MASK ) != 0 || Sys_AltDown() ) {
+		return false;
+	}
+
+	switch ( code )
+	{
+	case 'W': frame->OnCameraForward( keydown ); break;
+	case 'S': frame->OnCameraBack( keydown ); break;
+	case 'A': frame->OnCameraStrafeleft( keydown ); break;
+	case 'D': frame->OnCameraStraferight( keydown ); break;
+	case 'E': frame->OnCameraUp( keydown ); break;
+	case 'Q': frame->OnCameraDown( keydown ); break;
+	default: return false;
+	}
+	return true;
+}
+
 static gint mainframe_keypress( GtkWidget* widget, GdkEventKey* event, gpointer data ){
 	unsigned int code = gdk_keyval_to_upper( event->keyval );
 
@@ -812,6 +849,11 @@ static gint mainframe_keypress( GtkWidget* widget, GdkEventKey* event, gpointer 
 #ifdef DBG_KBD
 	Sys_Printf( "mainframe_keypress processing into a command\n" );
 #endif
+	if ( HandleFreeLookKey( code, event->state, true ) ) {
+		g_signal_stop_emission_by_name( G_OBJECT( widget ), "key-press-event" );
+		return FALSE;
+	}
+
 	for ( int i = 0; i < g_nCommandCount; i++ )
 	{
 		if ( g_Commands[i].m_nKey == code ) { // find a match?
@@ -843,6 +885,11 @@ static gint mainframe_keyrelease( GtkWidget* widget, GdkEventKey* event, gpointe
 //	if ( gtk_accelerator_valid( event->keyval, (GdkModifierType)0 ) ) {
 //		return TRUE;
 //	}
+
+	if ( HandleFreeLookKey( code, event->state, false ) ) {
+		g_signal_stop_emission_by_name( G_OBJECT( widget ), "key-release-event" );
+		return FALSE;
+	}
 
 	for ( int i = 0; i < g_nCommandCount; i++ )
 	{
@@ -1536,6 +1583,8 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		}
 
 		create_menu_item_with_mnemonic( menu, _( "Cylinder" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHTUBE );
+		create_menu_item_with_mnemonic( menu, _( "Improved Cylinder" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDTUBE );
+		create_menu_item_with_mnemonic( menu, _( "Hinted Cylinder" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHHINTEDTUBE );
 		menu_in_menu = create_menu_in_menu_with_mnemonic( menu, _( "More Cylinders" ) );
 		create_menu_item_with_mnemonic( menu_in_menu, _( "Dense Cylinder" ),
 										G_CALLBACK( HandleCommand ), ID_CURVE_PATCHDENSETUBE );
@@ -1545,7 +1594,9 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 										G_CALLBACK( HandleCommand ), ID_CURVE_PATCHSQUARE );
 		menu_separator( menu );
 		create_menu_item_with_mnemonic( menu, _( "End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHENDCAP );
+		create_menu_item_with_mnemonic( menu, _( "Improved End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDENDCAP );
 		create_menu_item_with_mnemonic( menu, _( "Bevel" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHBEVEL );
+		create_menu_item_with_mnemonic( menu, _( "Improved Bevel" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDBEVEL );
 		menu_in_menu = create_menu_in_menu_with_mnemonic( menu, _( "More End caps, Bevels" ) );
 		create_menu_item_with_mnemonic( menu_in_menu, _( "Square Endcap" ),
 										G_CALLBACK( HandleCommand ), ID_CURVE_MOREENDCAPSBEVELS_SQUAREBEVEL );
@@ -1553,6 +1604,12 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 										G_CALLBACK( HandleCommand ), ID_CURVE_MOREENDCAPSBEVELS_SQUAREENDCAP );
 		menu_separator( menu );
 		create_menu_item_with_mnemonic( menu, _( "Cone" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHCONE );
+		create_menu_item_with_mnemonic( menu, _( "Improved Cone" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDCONE );
+		menu_separator( menu );
+		create_menu_item_with_mnemonic( menu, _( "Toggle Rounded Hint" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDHINT );
+		create_menu_item_with_mnemonic( menu, _( "Set Hint From Selection" ), G_CALLBACK( HandleCommand ), ID_CURVE_SETHINT );
+		create_menu_item_with_mnemonic( menu, _( "Round Selected Patches" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDSELECTED );
+		menu_separator( menu );
 		item = create_menu_item_with_mnemonic( menu, _( "Sphere" ),
 											   G_CALLBACK( HandleCommand ), ID_CURVE_PRIMITIVES_SPHERE );
 		gtk_widget_set_sensitive( item, FALSE );
@@ -6533,6 +6590,15 @@ void MainFrame::OnCurvePatchtube(){
 	Undo_End();
 }
 
+void MainFrame::OnCurvePatchimprovedtube(){
+	Undo_Start( "make improved cylinder" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_BrushToMesh( false, false, false, false, 3, true );
+	Sys_UpdateWindows( W_ALL );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
 void MainFrame::OnCurvePatchdensetube(){
 	Undo_Start( "dense cylinder" );
 	Undo_AddBrushList( &selected_brushes );
@@ -6574,6 +6640,65 @@ void MainFrame::OnCurvePatchendcap(){
 	Undo_Start( "make end cap" );
 	Undo_AddBrushList( &selected_brushes );
 	Patch_BrushToMesh( false, false, true );
+	Sys_UpdateWindows( W_ALL );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
+void MainFrame::OnCurveRoundhint(){
+	g_bPatchRoundHint = !g_bPatchRoundHint;
+	Sys_Printf( "Rounded hint %s\n", g_bPatchRoundHint ? "on" : "off" );
+	Sys_UpdateWindows( W_ALL );
+}
+
+void MainFrame::OnCurveSethint(){
+	Patch_SetHintFromSelected();
+	g_bPatchRoundHint = true;
+	Sys_UpdateWindows( W_ALL );
+}
+
+void MainFrame::OnCurveRoundselected(){
+	Undo_Start( "round selected patches" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_RoundSelected();
+	Sys_UpdateWindows( W_ALL );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
+void MainFrame::OnCurvePatchhintedtube(){
+	Undo_Start( "make hinted cylinder" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_BrushToMesh( false );
+	Patch_SetHintFromSelected(); // freeze the reference now, before any vertex is touched
+	g_bPatchRoundHint = true;
+	Sys_UpdateWindows( W_ALL );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
+void MainFrame::OnCurvePatchimprovedendcap(){
+	Undo_Start( "make improved end cap" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_BrushToMesh( false, false, true, false, 3, true );
+	Sys_UpdateWindows( W_ALL );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
+void MainFrame::OnCurvePatchimprovedbevel(){
+	Undo_Start( "make improved bevel" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_BrushToMesh( false, true, false, false, 3, true );
+	Sys_UpdateWindows( W_ALL );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
+void MainFrame::OnCurvePatchimprovedcone(){
+	Undo_Start( "make improved cone" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_BrushToMesh( true, false, false, false, 3, true );
 	Sys_UpdateWindows( W_ALL );
 	Undo_EndBrushList( &selected_brushes );
 	Undo_End();

@@ -175,6 +175,14 @@ struct SKeyInfo
 #define ID_CURVE_DELETE_LASTROW         32950
 #define ID_CURVE_NEGATIVE               32951
 #define ID_PATCH_BEND                   32952
+#define ID_CURVE_PATCHIMPROVEDTUBE      40330
+#define ID_CURVE_PATCHIMPROVEDENDCAP    40331
+#define ID_CURVE_PATCHIMPROVEDBEVEL     40332
+#define ID_CURVE_PATCHIMPROVEDCONE      40333
+#define ID_CURVE_ROUNDHINT              40334
+#define ID_CURVE_ROUNDSELECTED          40335
+#define ID_CURVE_PATCHHINTEDTUBE        40336
+#define ID_CURVE_SETHINT                40337
 #define ID_CURVE_PATCHDENSETUBE         32955
 #define ID_CURVE_PATCHVERYDENSETUBE     32956
 #define ID_CURVE_CAP                    32957
@@ -804,6 +812,14 @@ void OnPatchToggleBox();
 void OnPatchWireframe();
 void OnCurvePatchcone();
 void OnCurvePatchtube();
+void OnCurvePatchimprovedtube();
+void OnCurvePatchimprovedendcap();
+void OnCurvePatchimprovedbevel();
+void OnCurvePatchimprovedcone();
+void OnCurveRoundhint();
+void OnCurveRoundselected();
+void OnCurveSethint();
+void OnCurvePatchhintedtube();
 void OnPatchWeld();
 void OnCurvePatchbevel();
 void OnCurvePatchendcap();

@@ -27,6 +27,7 @@
 #include <glib/gi18n.h>
 
 #include "stdafx.h"
+#include <map>
 #include "gtkmisc.h"
 
 #include "gtkr_list.h"
@@ -1204,10 +1205,29 @@ void Patch_CapCurrent(){
 
 /*
    ===============
+   ImprovedPatchPullIn
+
+   Patches are non-rational quadratic beziers, so a circle/ellipse can only be approximated.
+   Placing the off-curve control points on the corner of the bounding box (the classic layout)
+   bulges up to 6% past the true curve. Pulling them in to 0.925 of the way from the arc's
+   centre towards the corner brings the radial error down to about +-0.8%.
+
+   Returns the pulled-in coordinate on one axis, rounded to a whole unit so that the points can
+   be matched by hand with other patches (end caps, lids) when working at grid 1.
+   ===============
+ */
+#define IMPROVED_PATCH_K 0.925f
+
+static float ImprovedPatchPullIn( float center, float corner, float k ){
+	return floorf( center + k * ( corner - center ) + 0.5f );
+}
+
+/*
+   ===============
    BrushToPatchMesh
    ===============
  */
-void Patch_BrushToMesh( bool bCone, bool bBevel, bool bEndcap, bool bSquare, int nHeight ){
+void Patch_BrushToMesh( bool bCone, bool bBevel, bool bEndcap, bool bSquare, int nHeight, bool bImproved ){
 	brush_t     *b;
 	patchMesh_t *p;
 	int i,j;
@@ -1244,6 +1264,12 @@ void Patch_BrushToMesh( bool bCone, bool bBevel, bool bEndcap, bool bSquare, int
 			p->ctrl[2][i].xyz[0] =  b->maxs[0];
 			p->ctrl[2][i].xyz[1] =  b->maxs[1];
 			p->ctrl[2][i].xyz[2] = nStart;
+
+			if ( bImproved ) {
+				// quarter ellipse centred on ( mins[0], maxs[1] ), see ImprovedPatchPullIn
+				p->ctrl[1][i].xyz[0] = ImprovedPatchPullIn( b->mins[0], b->maxs[0], IMPROVED_PATCH_K );
+				p->ctrl[1][i].xyz[1] = ImprovedPatchPullIn( b->maxs[1], b->mins[1], IMPROVED_PATCH_K );
+			}
 			nStart += nStep;
 		}
 	}
@@ -1273,6 +1299,15 @@ void Patch_BrushToMesh( bool bCone, bool bBevel, bool bEndcap, bool bSquare, int
 			p->ctrl[4][i].xyz[0] =  b->maxs[0];
 			p->ctrl[4][i].xyz[1] =  b->mins[1];
 			p->ctrl[4][i].xyz[2] = nStart;
+
+			if ( bImproved ) {
+				// two quarter ellipses centred on ( xc, mins[1] ), see ImprovedPatchPullIn
+				const float xc = ( b->maxs[0] + b->mins[0] ) * 0.5f;
+				p->ctrl[1][i].xyz[0] = ImprovedPatchPullIn( xc, b->mins[0], IMPROVED_PATCH_K );
+				p->ctrl[1][i].xyz[1] = ImprovedPatchPullIn( b->mins[1], b->maxs[1], IMPROVED_PATCH_K );
+				p->ctrl[3][i].xyz[0] = ImprovedPatchPullIn( xc, b->maxs[0], IMPROVED_PATCH_K );
+				p->ctrl[3][i].xyz[1] = ImprovedPatchPullIn( b->mins[1], b->maxs[1], IMPROVED_PATCH_K );
+			}
 			nStart += nStep;
 		}
 	}
@@ -1305,6 +1340,39 @@ void Patch_BrushToMesh( bool bCone, bool bBevel, bool bEndcap, bool bSquare, int
 			p->ctrl[i][1].xyz[2] = ( p->ctrl[i][0].xyz[2] + p->ctrl[i][2].xyz[2] ) * 0.5;
 		}
 		InterpolateInteriorPoints( p );
+
+		if ( bImproved && !bSquare ) {
+			// Improved cylinder: patches are non-rational quadratic beziers, so a true circle is
+			// impossible with 9 columns. The classic layout (control points on the box corners)
+			// bulges up to 6% past the circle on the diagonals. Here the on-curve points (even
+			// columns) sit on the box edge midpoints (radius R) and the off-curve points (odd
+			// columns) are pulled in to 0.925 of the corner offset, which minimises the maximum
+			// radial error to about +-0.8%.
+			// The off-curve points are rounded to whole units (see ImprovedPatchPullIn).
+			const float k = IMPROVED_PATCH_K;
+			const float xc = ( b->maxs[0] + b->mins[0] ) * 0.5f;
+			const float yc = ( b->maxs[1] + b->mins[1] ) * 0.5f;
+			const float hx = ( b->maxs[0] - b->mins[0] ) * 0.5f;
+			const float hy = ( b->maxs[1] - b->mins[1] ) * 0.5f;
+			const float x0 = ImprovedPatchPullIn( xc, b->mins[0], k ), x1 = ImprovedPatchPullIn( xc, b->maxs[0], k );
+			const float y0 = ImprovedPatchPullIn( yc, b->mins[1], k ), y1 = ImprovedPatchPullIn( yc, b->maxs[1], k );
+
+			for ( j = 0; j < p->height; j++ )
+			{
+				// off-curve points: box corners pulled towards the centre
+				p->ctrl[1][j].xyz[0] = x0;  p->ctrl[1][j].xyz[1] = y0;
+				p->ctrl[3][j].xyz[0] = x1;  p->ctrl[3][j].xyz[1] = y0;
+				p->ctrl[5][j].xyz[0] = x1;  p->ctrl[5][j].xyz[1] = y1;
+				p->ctrl[7][j].xyz[0] = x0;  p->ctrl[7][j].xyz[1] = y1;
+
+				// on-curve points: box edge midpoints (columns 0 and 8 are the same point)
+				p->ctrl[0][j].xyz[0] = xc - hx;  p->ctrl[0][j].xyz[1] = yc;
+				p->ctrl[2][j].xyz[0] = xc;       p->ctrl[2][j].xyz[1] = yc - hy;
+				p->ctrl[4][j].xyz[0] = xc + hx;  p->ctrl[4][j].xyz[1] = yc;
+				p->ctrl[6][j].xyz[0] = xc;       p->ctrl[6][j].xyz[1] = yc + hy;
+				p->ctrl[8][j].xyz[0] = xc - hx;  p->ctrl[8][j].xyz[1] = yc;
+			}
+		}
 
 		if ( bSquare ) {
 			if ( bBevel || bEndcap ) {
@@ -3590,6 +3658,271 @@ void Patch_DrawCam( patchMesh_t *pm ){
 	qglPopAttrib(); // restore saved state
 }
 
+/*
+   ==================
+   Rounded hint
+
+   A "regular" patch ring (off-curve control points on the corners of its box) is easy to deform by
+   hand, but bulges past the true curve. Patch_ComputeRounded() produces the improved version of
+   any patch: each off-curve column point is pulled towards the midpoint of its two on-curve
+   neighbours by an amount that depends on the arc angle (about 15% for a 90 degree arc, which is
+   the same result as the Improved Cylinder), then rounded to whole units.
+
+   The result is shown as a ghost over selected patches (g_bPatchRoundHint) and can be applied
+   with Patch_RoundSelected(). Arcs that are almost flat (nothing to round) or very wide are left
+   alone, so straight rows and flat patches are not touched.
+   ==================
+ */
+bool g_bPatchRoundHint = false;
+
+struct roundedCtrl_t
+{
+	int width, height;
+	vec3_t v[MAX_PATCH_WIDTH][MAX_PATCH_HEIGHT];
+};
+
+// The hint is a frozen reference: it is taken once (see Patch_GetHint) and then stays put while the
+// patch's vertices are edited, so that the patch can be worked towards it. It only follows
+// whole-patch transforms (move, rotate, scale, flip). Kept beside the patch, keyed by pointer,
+// so the shared patchMesh_t layout is untouched. Not saved with the map.
+static std::map<const patchMesh_t*, roundedCtrl_t> g_patchHints;
+
+static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out ){
+	const float minArc = 0.15f;  // ~9 degrees
+	const float maxArc = 1.75f;  // ~100 degrees
+	bool changed = false;
+	int i, j;
+
+	out->width = p->width;
+	out->height = p->height;
+	for ( i = 0; i < p->width; i++ )
+		for ( j = 0; j < p->height; j++ )
+			VectorCopy( p->ctrl[i][j].xyz, out->v[i][j] );
+
+	for ( i = 1; i < p->width - 1; i += 2 )
+	{
+		for ( j = 0; j < p->height; j++ )
+		{
+			const float *P0 = p->ctrl[i - 1][j].xyz;
+			const float *C  = p->ctrl[i][j].xyz;
+			const float *P2 = p->ctrl[i + 1][j].xyz;
+			vec3_t a, b;
+			VectorSubtract( P0, C, a );
+			VectorSubtract( P2, C, b );
+			float la = sqrtf( DotProduct( a, a ) );
+			float lb = sqrtf( DotProduct( b, b ) );
+			if ( la < 0.001f || lb < 0.001f ) {
+				continue;
+			}
+			float cosPhi = DotProduct( a, b ) / ( la * lb );
+			if ( cosPhi > 1.0f ) {
+				cosPhi = 1.0f;
+			}
+			if ( cosPhi < -1.0f ) {
+				cosPhi = -1.0f;
+			}
+			float theta = 3.14159265f - acosf( cosPhi ); // angle of the arc
+			if ( theta < minArc || theta > maxArc ) {
+				continue;
+			}
+			float c = cosf( theta * 0.5f );
+			float e0 = ( c + 1.0f / c ) * 0.5f - 1.0f;    // radial error of the plain layout at mid arc
+			float k = 1.0f - 1.75f * e0 * c;              // fraction of the way from the arc centre to the corner
+			float s = ( 1.0f - k ) / ( 1.0f - c * c );    // pull towards the chord midpoint
+
+			for ( int n = 0; n < 3; n++ )
+			{
+				float mid = ( P0[n] + P2[n] ) * 0.5f;
+				float v = floorf( C[n] + s * ( mid - C[n] ) + 0.5f );
+				if ( v != C[n] ) {
+					changed = true;
+				}
+				out->v[i][j][n] = v;
+			}
+		}
+	}
+	return changed;
+}
+
+// the frozen hint of a patch; takes it from the patch as it is now if there is none yet
+static roundedCtrl_t* Patch_GetHint( patchMesh_t *p, bool bCreate ){
+	std::map<const patchMesh_t*, roundedCtrl_t>::iterator it = g_patchHints.find( p );
+	if ( it != g_patchHints.end() ) {
+		return &it->second;
+	}
+	if ( !bCreate ) {
+		return NULL;
+	}
+	roundedCtrl_t r;
+	Patch_ComputeRounded( p, &r );
+	return &( g_patchHints[p] = r );
+}
+
+// take a fresh hint from the current shape of every selected patch
+void Patch_SetHintFromSelected(){
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		if ( b->patchBrush ) {
+			roundedCtrl_t r;
+			Patch_ComputeRounded( b->pPatch, &r );
+			g_patchHints[b->pPatch] = r;
+		}
+	}
+}
+
+// whole-patch transforms carry the hint along, vertex edits do not
+static void Patch_HintTranslate( const patchMesh_t *p, const vec3_t vMove ){
+	std::map<const patchMesh_t*, roundedCtrl_t>::iterator it = g_patchHints.find( p );
+	if ( it == g_patchHints.end() ) {
+		return;
+	}
+	for ( int i = 0; i < it->second.width; i++ )
+		for ( int j = 0; j < it->second.height; j++ )
+			VectorAdd( it->second.v[i][j], vMove, it->second.v[i][j] );
+}
+
+static void Patch_HintScale( const patchMesh_t *p, const vec3_t vOrigin, const vec3_t vAmt ){
+	std::map<const patchMesh_t*, roundedCtrl_t>::iterator it = g_patchHints.find( p );
+	if ( it == g_patchHints.end() ) {
+		return;
+	}
+	for ( int i = 0; i < it->second.width; i++ )
+		for ( int j = 0; j < it->second.height; j++ )
+			for ( int n = 0; n < 3; n++ )
+				it->second.v[i][j][n] = ( it->second.v[i][j][n] - vOrigin[n] ) * vAmt[n] + vOrigin[n];
+}
+
+static void Patch_HintMatrix( const patchMesh_t *p, const vec3_t vOrigin, const vec3_t vMatrix[3] ){
+	std::map<const patchMesh_t*, roundedCtrl_t>::iterator it = g_patchHints.find( p );
+	if ( it == g_patchHints.end() ) {
+		return;
+	}
+	for ( int i = 0; i < it->second.width; i++ )
+		for ( int j = 0; j < it->second.height; j++ )
+		{
+			vec3_t t;
+			VectorSubtract( it->second.v[i][j], vOrigin, t );
+			for ( int n = 0; n < 3; n++ )
+				it->second.v[i][j][n] = DotProduct( t, vMatrix[n] ) + vOrigin[n];
+		}
+}
+
+void Patch_RoundSelected(){
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		if ( !b->patchBrush ) {
+			continue;
+		}
+		patchMesh_t *p = b->pPatch;
+		roundedCtrl_t r;
+		if ( !Patch_ComputeRounded( p, &r ) ) {
+			continue;
+		}
+		for ( int i = 0; i < p->width; i++ )
+			for ( int j = 0; j < p->height; j++ )
+				VectorCopy( r.v[i][j], p->ctrl[i][j].xyz );
+
+		p->bDirty = true;
+		vec3_t vMin, vMax;
+		Patch_CalcBounds( p, vMin, vMax );
+		Brush_RebuildBrush( p->pSymbiot, vMin, vMax );
+	}
+	UpdatePatchInspector();
+}
+
+// point on the quadratic bezier sub patch whose first control point is ( 2 * bu, 2 * bv )
+static void Patch_HintPoint( const roundedCtrl_t *r, int bu, int bv, float u, float v, vec3_t out ){
+	const float bU[3] = { ( 1 - u ) * ( 1 - u ), 2 * u * ( 1 - u ), u * u };
+	const float bV[3] = { ( 1 - v ) * ( 1 - v ), 2 * v * ( 1 - v ), v * v };
+	VectorClear( out );
+	for ( int a = 0; a < 3; a++ )
+		for ( int b = 0; b < 3; b++ )
+			VectorMA( out, bU[a] * bV[b], r->v[2 * bu + a][2 * bv + b], out );
+}
+
+void Patch_DrawHint( patchMesh_t *pm, bool bFill ){
+	const roundedCtrl_t &r = *Patch_GetHint( pm, true );
+
+	const int N = 6;
+	vec3_t pt;
+
+	qglPushAttrib( GL_ALL_ATTRIB_BITS );
+	qglDisable( GL_TEXTURE_2D );
+	qglDisable( GL_LIGHTING );
+	qglDisable( GL_CULL_FACE );
+	qglDisable( GL_DEPTH_TEST );
+	qglDisable( GL_LINE_STIPPLE );
+	qglEnable( GL_BLEND );
+	qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+	qglLineWidth( 1 );
+
+	for ( int bu = 0; bu < ( r.width - 1 ) / 2; bu++ )
+	{
+		for ( int bv = 0; bv < ( r.height - 1 ) / 2; bv++ )
+		{
+			if ( bFill ) {
+				qglPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+				qglColor4f( 0.2f, 0.9f, 1.0f, 0.15f );
+				for ( int iu = 0; iu < N; iu++ )
+				{
+					qglBegin( GL_QUAD_STRIP );
+					for ( int iv = 0; iv <= N; iv++ )
+					{
+						Patch_HintPoint( &r, bu, bv, (float)iu / N, (float)iv / N, pt );
+						qglVertex3fv( pt );
+						Patch_HintPoint( &r, bu, bv, (float)( iu + 1 ) / N, (float)iv / N, pt );
+						qglVertex3fv( pt );
+					}
+					qglEnd();
+				}
+			}
+
+			qglColor4f( 0.2f, 0.9f, 1.0f, 0.9f );
+			for ( int iu = 0; iu <= N; iu++ )
+			{
+				qglBegin( GL_LINE_STRIP );
+				for ( int iv = 0; iv <= N; iv++ )
+				{
+					Patch_HintPoint( &r, bu, bv, (float)iu / N, (float)iv / N, pt );
+					qglVertex3fv( pt );
+				}
+				qglEnd();
+			}
+			for ( int iv = 0; iv <= N; iv++ )
+			{
+				qglBegin( GL_LINE_STRIP );
+				for ( int iu = 0; iu <= N; iu++ )
+				{
+					Patch_HintPoint( &r, bu, bv, (float)iu / N, (float)iv / N, pt );
+					qglVertex3fv( pt );
+				}
+				qglEnd();
+			}
+		}
+	}
+
+	// mark the hint's control points that the patch has not reached yet: drag the vertex onto the dot
+	if ( r.width == pm->width && r.height == pm->height ) {
+		qglPointSize( 5 );
+		qglColor4f( 1.0f, 0.8f, 0.2f, 1.0f );
+		qglBegin( GL_POINTS );
+		for ( int i = 0; i < r.width; i++ )
+		{
+			for ( int j = 0; j < r.height; j++ )
+			{
+				if ( fabsf( r.v[i][j][0] - pm->ctrl[i][j].xyz[0] ) > 0.01f
+					 || fabsf( r.v[i][j][1] - pm->ctrl[i][j].xyz[1] ) > 0.01f
+					 || fabsf( r.v[i][j][2] - pm->ctrl[i][j].xyz[2] ) > 0.01f ) {
+					qglVertex3fv( r.v[i][j] );
+				}
+			}
+		}
+		qglEnd();
+	}
+
+	qglPopAttrib();
+}
+
 void ConvexHullForSection( float section[2][4][7] ) {
 }
 
@@ -3631,6 +3964,7 @@ void Patch_Move( patchMesh_t *pm, const vec3_t vMove, bool bRebuild ){
 			VectorAdd( pm->ctrl[w][h].xyz, vMove, pm->ctrl[w][h].xyz );
 		}
 	}
+	Patch_HintTranslate( pm, vMove );
 	// bRebuild is never true
 	if ( bRebuild ) {
 		vec3_t vMin, vMax;
@@ -3666,6 +4000,9 @@ void Patch_ApplyMatrix( patchMesh_t *p, const vec3_t vOrigin, const vec3_t vMatr
 				}
 			}
 		}
+	}
+	if ( !( ( g_qeglobals.d_select_mode == sel_curvepoint && g_qeglobals.d_num_move_points != 0 ) || g_bPatchBendMode ) ) {
+		Patch_HintMatrix( p, vOrigin, vMatrix ); // whole patch transformed, the hint goes along
 	}
 	vec3_t vMin, vMax;
 	Patch_CalcBounds( p, vMin, vMax );
@@ -3786,6 +4123,7 @@ void Patch_Delete( patchMesh_t *p ){
 	// delete LOD drawLists
 	Patch_DeleteDrawLists( p );
 
+	g_patchHints.erase( p ); // the hint dies with its patch
 
 	free( p );
 	p = NULL;
@@ -3816,6 +4154,9 @@ void Patch_Scale( patchMesh_t *p, const vec3_t vOrigin, const vec3_t vAmt, bool 
 				p->ctrl[w][h].xyz[i] += vOrigin[i];
 			}
 		}
+	}
+	if ( g_qeglobals.d_select_mode != sel_curvepoint ) {
+		Patch_HintScale( p, vOrigin, vAmt ); // whole patch scaled, the hint goes along
 	}
 	if ( bRebuild ) {
 		vec3_t vMin, vMax;

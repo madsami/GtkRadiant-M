@@ -3015,6 +3015,10 @@ void XYWnd::XY_Draw(){
 #endif
 		Brush_DrawXY( brush, m_nViewType );
 
+		if ( g_bPatchRoundHint && brush->patchBrush ) {
+			Patch_DrawHint( brush->pPatch, false );
+		}
+
 		if ( !bFixedSize ) {
 			if ( brush->owner->eclass->fixedsize ) {
 				bFixedSize = true;

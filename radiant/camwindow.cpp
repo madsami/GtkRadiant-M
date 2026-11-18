@@ -1515,6 +1515,16 @@ void CamWnd::Cam_Draw(){
 		}
 	}
 
+	// ghost of the rounded version of the selected patches
+	if ( g_bPatchRoundHint ) {
+		for ( brush = pList->next ; brush != pList ; brush = brush->next )
+		{
+			if ( brush->patchBrush && !brush->bCamCulled ) {
+				Patch_DrawHint( brush->pPatch, true );
+			}
+		}
+	}
+
 	// edge / vertex flags
 	if ( g_qeglobals.d_select_mode == sel_vertex ) {
 			// brush verts

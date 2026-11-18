@@ -851,7 +851,11 @@ int mainRadiant( int argc, char* argv[] ) {
 #if defined( _WIN32 ) && defined( _MSC_VER ) && !defined( _DEBUG )
 #include <dbghelp.h>
 #include <shellapi.h>
+// ientity.h defines a DeleteKey macro that collides with IPropertyStore::DeleteKey in newer Windows SDKs
+#pragma push_macro( "DeleteKey" )
+#undef DeleteKey
 #include <shlobj.h>
+#pragma pop_macro( "DeleteKey" )
 #include <strsafe.h> //StringCchPrintf
 
 int GenerateDump( EXCEPTION_POINTERS* pExceptionPointers ) {

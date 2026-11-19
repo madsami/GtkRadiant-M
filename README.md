@@ -5,6 +5,12 @@ A customised build of [GtkRadiant](https://github.com/TTimo/GtkRadiant) 1.6.7 (t
 level editing in Star Wars Jedi Knight: Jedi Academy and used on Windows. It keeps the classic GtkRadiant
 interface and controls; it is not a rewrite.
 
+AI disclosure
+-------------
+
+All of the changes in this fork were written by Claude (Anthropic's AI model) under my direction. I chose what to
+build and tested the results; the code itself was produced with AI assistance.
+
 What is different
 -----------------
 

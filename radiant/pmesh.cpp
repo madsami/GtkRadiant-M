@@ -28,6 +28,7 @@
 
 #include "stdafx.h"
 #include <map>
+#include <vector>
 #include "gtkmisc.h"
 
 #include "gtkr_list.h"
@@ -3037,6 +3038,124 @@ void Patch_StartDrawLists( std::list<std::list<drawVert_t>*> *drawLists, BTNode_
 typedef std::list<drawVert_t> drawList_t;
 typedef std::list<std::list<drawVert_t>*> drawLists_t;
 
+/*
+   ==================
+   Patch_SmoothDrawListNormals
+
+   The normals of the tessellated vertices come from three different formulas (control point
+   tangents, the LOD trees, and the interpolated inner rows). They only agree on regular rectangular
+   patches; on a patch that is flat but not rectangular (bent in its own plane) they disagree, so
+   with OpenGL lighting such a patch is shaded differently from a flat patch on the same plane.
+
+   This recomputes every normal from the tessellated surface itself: the area-weighted average of the
+   quads around the vertex. A flat patch then has the plane's normal everywhere (the same shade as any
+   other flat patch in that plane), a curved one gets smooth normals, and closed patches (cylinders)
+   are averaged across their seam. The sign follows the quad strip winding that DrawPatchMesh uses.
+   ==================
+ */
+static void Patch_SmoothDrawListNormals( drawLists_t *lists ){
+	const int R = (int)lists->size();
+	if ( R < 2 ) {
+		return;
+	}
+
+	std::vector<std::vector<drawVert_t*> > g;
+	g.reserve( R );
+	int C = 0;
+	for ( drawLists_t::iterator li = lists->begin(); li != lists->end(); ++li )
+	{
+		std::vector<drawVert_t*> row;
+		for ( drawList_t::iterator vi = ( *li )->begin(); vi != ( *li )->end(); ++vi )
+			row.push_back( &( *vi ) );
+		if ( g.empty() ) {
+			C = (int)row.size();
+		}
+		else if ( (int)row.size() != C ) {
+			return; // ragged lists: leave the original normals alone
+		}
+		g.push_back( row );
+	}
+	if ( C < 2 ) {
+		return;
+	}
+
+	// closed patches (first and last row / column coincide) are smoothed across the seam
+	bool wrapC = true, wrapR = true;
+	for ( int r = 0; r < R && wrapC; r++ )
+	{
+		vec3_t d;
+		VectorSubtract( g[r][0]->xyz, g[r][C - 1]->xyz, d );
+		if ( VectorLength( d ) > 0.5f ) {
+			wrapC = false;
+		}
+	}
+	for ( int c = 0; c < C && wrapR; c++ )
+	{
+		vec3_t d;
+		VectorSubtract( g[0][c]->xyz, g[R - 1][c]->xyz, d );
+		if ( VectorLength( d ) > 0.5f ) {
+			wrapR = false;
+		}
+	}
+
+	// face normal (area weighted) of the quad with corners (r,c) .. (r+1,c+1), facing the way the strips wind
+	std::vector<vec3_t> qn( ( R - 1 ) * ( C - 1 ) );
+	for ( int r = 0; r < R - 1; r++ )
+	{
+		for ( int c = 0; c < C - 1; c++ )
+		{
+			vec3_t d1, d2;
+			VectorSubtract( g[r + 1][c + 1]->xyz, g[r][c]->xyz, d1 );
+			VectorSubtract( g[r][c + 1]->xyz, g[r + 1][c]->xyz, d2 );
+			CrossProduct( d1, d2, qn[r * ( C - 1 ) + c] );
+		}
+	}
+
+	for ( int r = 0; r < R; r++ )
+	{
+		for ( int c = 0; c < C; c++ )
+		{
+			vec3_t sum = { 0, 0, 0 };
+			for ( int dr = -1; dr <= 0; dr++ )
+			{
+				int qr = r + dr;
+				if ( qr < 0 ) {
+					if ( !wrapR ) {
+						continue;
+					}
+					qr = R - 2;
+				}
+				else if ( qr > R - 2 ) {
+					if ( !wrapR ) {
+						continue;
+					}
+					qr = 0;
+				}
+				for ( int dc = -1; dc <= 0; dc++ )
+				{
+					int qc = c + dc;
+					if ( qc < 0 ) {
+						if ( !wrapC ) {
+							continue;
+						}
+						qc = C - 2;
+					}
+					else if ( qc > C - 2 ) {
+						if ( !wrapC ) {
+							continue;
+						}
+						qc = 0;
+					}
+					VectorAdd( sum, qn[qr * ( C - 1 ) + qc], sum );
+				}
+			}
+			if ( VectorLength( sum ) > 1e-6f ) { // all quads degenerate: keep the old normal
+				VectorNormalize( sum, g[r][c]->normal );
+			}
+		}
+	}
+}
+
 void Patch_CreateDrawLists( patchMesh_t *patch ){
 	int col, row, colpos, rowpos;
 
@@ -3079,6 +3198,8 @@ void Patch_CreateDrawLists( patchMesh_t *patch ){
 			Patch_TraverseColBTInOrder( iter1, patch->colLOD[colpos], patch->colLOD[colpos + 1], patch->colLOD[colpos + 2], patch->rowLOD[rowpos + 1], patch->rowLOD[rowpos], 0.5, 0.25 );
 		}
 	}
+
+	Patch_SmoothDrawListNormals( drawLists );
 
 	patch->drawLists = drawLists;
 }

@@ -1701,6 +1701,23 @@ void Texture_Draw( int width, int height ){
 				}
 			}
 
+			// transparent shaders (qer_trans, qer_alphafunc, fog...): long-dotted outline
+			if ( ( pCurrentShader->getFlags() & ( QER_TRANS | QER_ALPHAFUNC ) ) || pCurrentShader->getTrans() < 1.0f ) {
+				qglDisable( GL_TEXTURE_2D );
+				qglColor3f( 1.0f, 0.85f, 0.2f );
+				qglLineWidth( 1 );
+				qglEnable( GL_LINE_STIPPLE );
+				qglLineStipple( 1, 0x00FF );
+				qglBegin( GL_LINE_LOOP );
+				qglVertex2f( x - 5,y + 5 - FONT_HEIGHT );
+				qglVertex2f( x - 5,y - nHeight - 5 - FONT_HEIGHT );
+				qglVertex2f( x + 5 + nWidth,y - nHeight - 5 - FONT_HEIGHT );
+				qglVertex2f( x + 5 + nWidth,y + 5 - FONT_HEIGHT );
+				qglEnd();
+				qglDisable( GL_LINE_STIPPLE );
+				qglEnable( GL_TEXTURE_2D );
+			}
+
 			// Draw the texture
 			qglBindTexture( GL_TEXTURE_2D, q->texture_number );
 			QE_CheckOpenGLForErrors();

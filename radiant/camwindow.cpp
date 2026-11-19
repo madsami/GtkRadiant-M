@@ -28,6 +28,8 @@
 #include "stdafx.h"
 #include <gtk/gtk.h>
 #include <GL/gl.h>
+#include "glwidget.h"
+#include <gtk/gtkgl.h>
 
 extern void DrawPathLines();
 extern void Select_ShiftTexture( int x, int y );
@@ -45,6 +47,9 @@ CamWnd::CamWnd ()
 	m_nNumTransBrushes = 0;
 	memset( &m_Camera, 0, sizeof( camera_t ) );
 	m_pSide_select = NULL;
+	m_msFbo = m_msColor = m_msDepth = 0;
+	m_msWidth = m_msHeight = m_msSamples = 0;
+	m_msUnsupported = false;
 	m_bClipMode = false;
 	m_bFreeMove = false;
 	Cam_Init();
@@ -105,7 +110,7 @@ void CamWnd::OnCreate(){
 }
 
 void CamWnd::Cam_Init(){
-	m_Camera.timing = false;
+	m_Camera.timing = ( getenv( "RADIANT_CAMTIMING" ) != NULL );
 	m_Camera.origin[0] = 0.f;
 	m_Camera.origin[1] = 20.f;
 	m_Camera.origin[2] = 46.f;
@@ -320,8 +325,10 @@ void CamWnd::Cam_PositionDrag(){
 	}
 }
 
-void CamWnd::Cam_MouseControl( float dtime ){
-	Cam_KeyControl( dtime );
+// dtime: step used for mouse look (it scales summed mouse deltas, so it is a constant, not a time);
+// realDt: seconds since the last call, for the rate based right-mouse-button driving (-1 = use dtime)
+void CamWnd::Cam_MouseControl( float dtime, float realDt ){
+	const float rate = ( realDt >= 0.0f ) ? 8.0f * realDt : dtime;
 
 	if ( g_PrefsDlg.m_bCamFreeLook ) {
 		int dx, dy;
@@ -420,8 +427,8 @@ void CamWnd::Cam_MouseControl( float dtime ){
 			}
 		}
 
-		VectorMA( m_Camera.origin, yf * dtime * g_PrefsDlg.m_nMoveSpeed, m_Camera.forward, m_Camera.origin );
-		m_Camera.angles[YAW] += xf * -dtime * g_PrefsDlg.m_nAngleSpeed;
+		VectorMA( m_Camera.origin, yf * rate * g_PrefsDlg.m_nMoveSpeed, m_Camera.forward, m_Camera.origin );
+		m_Camera.angles[YAW] += xf * -rate * g_PrefsDlg.m_nAngleSpeed;
 
 		int nUpdate = ( g_PrefsDlg.m_bCamXYUpdate ) ? ( W_CAMERA | W_XY ) : ( W_CAMERA );
 		Sys_UpdateWindows( nUpdate );
@@ -429,28 +436,39 @@ void CamWnd::Cam_MouseControl( float dtime ){
 	}
 }
 
+// dtime is real time in seconds.
+// The classic code integrated everything with a fixed 0.2 per idle tick (the tick time was never measured:
+// 'oldtime' in MainFrame::RoutineProcessing was not static), so camera speed depended on how often that
+// tick happened to run, and a key press started with a slow acceleration ramp. Movement is now a per-second
+// rate. Full speed is 8 x "move speed" units/s, which is what the old code reached at its nominal 40 ticks/s.
 void CamWnd::Cam_KeyControl( float dtime ) {
 	static vec3_t avelocity;
 	static vec3_t velocity;
 
 	const vec3_t up = { 0, 0, 1 };
 
+	// legacy-equivalent step (0.2 per 25 ms) for the rotation keys, which keep their classic feel
+	float ldt = 8.0f * dtime;
+	if ( ldt > 0.5f ) {
+		ldt = 0.5f;
+	}
+
 	// Update angles
 	if ( m_Camera.movementflags & MOVE_ROTLEFT ) {
-		avelocity[YAW] += dtime * g_PrefsDlg.m_nAngleSpeed;
+		avelocity[YAW] += ldt * g_PrefsDlg.m_nAngleSpeed;
 	}
 	if ( m_Camera.movementflags & MOVE_ROTRIGHT ) {
-		avelocity[YAW] -= dtime * g_PrefsDlg.m_nAngleSpeed;
+		avelocity[YAW] -= ldt * g_PrefsDlg.m_nAngleSpeed;
 	}
 	if ( m_Camera.movementflags & MOVE_ROTUP ) {
-		avelocity[PITCH] += dtime * g_PrefsDlg.m_nAngleSpeed;
+		avelocity[PITCH] += ldt * g_PrefsDlg.m_nAngleSpeed;
 	}
 	if ( m_Camera.movementflags & MOVE_ROTDOWN ) {
-		avelocity[PITCH] -= dtime * g_PrefsDlg.m_nAngleSpeed;
+		avelocity[PITCH] -= ldt * g_PrefsDlg.m_nAngleSpeed;
 	}
 
 	// Now rotate the angles by the scaled velocity
-	VectorMA( m_Camera.angles, dtime, avelocity, m_Camera.angles );
+	VectorMA( m_Camera.angles, ldt, avelocity, m_Camera.angles );
 
 	if ( m_Camera.angles[PITCH] > 90.f ) {
 		m_Camera.angles[PITCH] = 90.f;
@@ -459,48 +477,51 @@ void CamWnd::Cam_KeyControl( float dtime ) {
 	}
 
 	// And then add some friction to slow us down
-	VectorScale( avelocity, 1.f - dtime, avelocity );
+	VectorScale( avelocity, 1.f - ldt, avelocity );
 	if ( VectorLength( avelocity ) < 1.f ) {
 		VectorClear( avelocity );
 	}
 
-	// Update velocity
+	// Movement: wanted velocity from the held keys
+	const float speed = 8.0f * g_PrefsDlg.m_nMoveSpeed;
+	vec3_t target;
+	VectorClear( target );
 	if ( m_Camera.movementflags & MOVE_FORWARD ) {
-		VectorMA( velocity, dtime * g_PrefsDlg.m_nMoveSpeed, m_Camera.forward, velocity );
+		VectorMA( target, speed, m_Camera.forward, target );
 	}
 	if ( m_Camera.movementflags & MOVE_BACK ) {
-		VectorMA( velocity, -dtime * g_PrefsDlg.m_nMoveSpeed, m_Camera.forward, velocity );
+		VectorMA( target, -speed, m_Camera.forward, target );
 	}
 	if ( m_Camera.movementflags & MOVE_STRAFELEFT ) {
-		VectorMA( velocity, -dtime * g_PrefsDlg.m_nMoveSpeed, m_Camera.right, velocity );
+		VectorMA( target, -speed, m_Camera.right, target );
 	}
 	if ( m_Camera.movementflags & MOVE_STRAFERIGHT ) {
-		VectorMA( velocity, dtime * g_PrefsDlg.m_nMoveSpeed, m_Camera.right, velocity );
+		VectorMA( target, speed, m_Camera.right, target );
 	}
 	if ( m_Camera.movementflags & MOVE_UP ) {
-		VectorMA( velocity, dtime * g_PrefsDlg.m_nMoveSpeed, up, velocity );
+		VectorMA( target, speed, up, target );
 	}
 	if ( m_Camera.movementflags & MOVE_DOWN ) {
-		VectorMA( velocity, -dtime * g_PrefsDlg.m_nMoveSpeed, up, velocity );
+		VectorMA( target, -speed, up, target );
 	}
 
-	// Now move the origin by the scaled velocity
+	// Get to that velocity almost instantly while a key is held (so the first frame already moves),
+	// and glide to a stop a bit more softly when it is let go.
+	const bool keyHeld = !VectorCompare( vec3_origin, target );
+	const float tau = keyHeld ? 0.02f : 0.12f;
+	const float blend = 1.0f - expf( -dtime / tau );
+	for ( int k = 0; k < 3; k++ )
+		velocity[k] += ( target[k] - velocity[k] ) * blend;
+
+	// Now move the origin by the velocity
 	VectorMA( m_Camera.origin, dtime, velocity, m_Camera.origin );
 
-	// And then add some friction to slow us down
-	VectorScale( velocity, 1.f - dtime, velocity );
-	if ( VectorLength( velocity ) < 1.f ) {
+	if ( !keyHeld && VectorLength( velocity ) < 1.f ) {
 		VectorClear( velocity );
 	}
 
 	// Save a screen update
 	if (!VectorCompare( vec3_origin, velocity ) || !VectorCompare( vec3_origin, avelocity ) ) {
-
-		// When m_bFreeMove is enabled, mousecontrol does the update
-		if ( m_bFreeMove ) {
-			return;
-		}
-
 		int nUpdate = ( g_PrefsDlg.m_bCamXYUpdate ) ? ( W_CAMERA | W_XY ) : ( W_CAMERA );
 		Sys_UpdateWindows( nUpdate );
 		g_pParentWnd->OnTimer();
@@ -1281,7 +1302,18 @@ void CamWnd::Cam_DrawStuff(){
 	// Arnout: empty alpha channels are now always filled with data. Don't set this anymore (would cause problems with qer_alphafunc too)
 //  qglTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
 
+	// Transparent surfaces must not write depth when the wire overlay is on: the overlay is depth tested,
+	// so anything behind glass would otherwise lose its wireframe (NetRadiant doesn't write depth for them either).
+	const bool glassNoDepth = g_PrefsDlg.m_bCamWireOverlay && ( m_Camera.draw_mode == cd_texture || m_Camera.draw_mode == cd_solid );
+	if ( glassNoDepth ) {
+		qglDepthMask( GL_FALSE );
+	}
+
 	Cam_DrawBrushes( DRAW_TEXTURED );
+
+	if ( glassNoDepth ) {
+		qglDepthMask( GL_TRUE );
+	}
 
 //  qglTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 	qglDisable( GL_BLEND );
@@ -1308,6 +1340,101 @@ void CamWnd::Cam_DrawStuff(){
 	default: Sys_Printf( "CamWnd::Cam_DrawStuff:invalid render mode\n" );
 	}
 
+	Cam_DrawWireOverlay();
+}
+
+/*
+   ==============
+   Cam_DrawWireOverlay
+
+   thin, semi-transparent wireframe over the textured / solid view (like NetRadiant's "Textured+Wire").
+   Edges are depth tested against what is already drawn, so only visible edges show.
+   ==============
+ */
+void CamWnd::Cam_DrawWireOverlay(){
+	if ( !g_PrefsDlg.m_bCamWireOverlay || ( m_Camera.draw_mode != cd_texture && m_Camera.draw_mode != cd_solid ) ) {
+		return;
+	}
+
+	GLint depthFunc;
+	qglGetIntegerv( GL_DEPTH_FUNC, &depthFunc );
+
+	qglPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+	qglDisable( GL_LIGHTING );
+	qglDisable( GL_COLOR_MATERIAL );
+	qglDisable( GL_TEXTURE_2D );
+	qglDisable( GL_CULL_FACE );
+	qglDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	qglDisableClientState( GL_NORMAL_ARRAY );
+	qglEnable( GL_BLEND );
+	qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+	qglEnable( GL_DEPTH_TEST );
+	qglDepthFunc( GL_LEQUAL );
+	qglDepthMask( GL_FALSE );
+	qglEnable( GL_POLYGON_OFFSET_LINE );
+	qglPolygonOffset( -1.0f, -1.0f );
+	// sub-pixel widths are honoured with multisampling (thin, faint lines like NetRadiant); otherwise clamped to 1
+	qglLineWidth( MAX( 10, g_PrefsDlg.m_nCamWireWidth ) / 100.0f );
+
+	const float grey = g_PrefsDlg.m_nCamWireBright / 100.0f;
+	qglColor4f( grey, grey, grey, g_PrefsDlg.m_nCamWireOpacity / 100.0f );
+
+	brush_t *pList = ( g_bClipMode && g_pSplitList ) ? g_pSplitList : &selected_brushes;
+
+	for ( int pass = 0; pass < 2; pass++ )
+	{
+		brush_t *head = ( pass == 0 ) ? &active_brushes : pList;
+		for ( brush_t *b = head->next; b != head; b = b->next )
+		{
+			if ( b->bFiltered || b->bCamCulled ) {
+				continue;
+			}
+
+			if ( b->patchBrush ) {
+				DrawPatchMesh( b->pPatch );
+				continue;
+			}
+
+			if ( b->owner->eclass->fixedsize ) { // lights, models, point entities
+				continue;
+			}
+
+			for ( face_t *face = b->brush_faces; face; face = face->next )
+			{
+				winding_t *w = face->face_winding;
+				if ( !w ) {
+					continue;
+				}
+
+				// same exclusions as Brush_Draw
+				if ( ( g_qeglobals.d_savedinfo.exclude & EXCLUDE_CAULK ) && strstr( face->texdef.GetName(), "caulk" ) ) {
+					continue;
+				}
+				if ( ( g_qeglobals.d_savedinfo.exclude & EXCLUDE_BOTCLIP )
+					 && ( strstr( face->texdef.GetName(), "botclip" ) || strstr( face->texdef.GetName(), "clipmonster" ) ) ) {
+					continue;
+				}
+				if ( ( g_qeglobals.d_savedinfo.exclude & EXCLUDE_CLIP ) && strstr( face->texdef.GetName(), "clip" ) ) {
+					continue;
+				}
+
+				qglBegin( GL_POLYGON );
+				for ( int i = 0; i < w->numpoints; i++ )
+					qglVertex3fv( w->points[i] );
+				qglEnd();
+			}
+		}
+	}
+
+	// restore what the rest of the frame expects
+	qglDisable( GL_POLYGON_OFFSET_LINE );
+	qglPolygonOffset( -1.0f, 2.0f );
+	qglDepthMask( GL_TRUE );
+	qglDepthFunc( depthFunc );
+	qglDisable( GL_BLEND );
+	qglEnable( GL_CULL_FACE );
+	qglPolygonMode( GL_FRONT, GL_LINE );
+	qglPolygonMode( GL_BACK, GL_FILL );
 }
 
 /*
@@ -1394,14 +1521,30 @@ void CamWnd::Cam_Draw(){
 #endif
 
 	if ( g_PrefsDlg.m_bGLLighting ) {
-		GLfloat inverse_cam_dir[4], ambient[4], diffuse[4]; //, material[4];
+		// Two lights: a weak headlight behind the camera plus a fixed "sun" from above, in world space.
+		// Levels are chosen to land where NetRadiant's rig does (it is a headlight only: colour * (0.6 + 0.4 cos),
+		// material 1.0; ours multiplies the texture by a material of 0.8, hence the higher ambient default).
+		// The sun makes the shading independent of where the camera looks, so floors, ceilings and
+		// walls (and curved patches) keep a stable, readable light/dark side.
+		GLfloat inverse_cam_dir[4], sun_dir[4], ambient[4], diffuse[4], sun_diffuse[4], black[4];
 
-		ambient[0] = ambient[1] = ambient[2] = 0.6f;
+		const float amb = g_PrefsDlg.m_nCamLightAmbient / 100.0f;
+		const float sun = g_PrefsDlg.m_nCamLightKey / 100.0f;
+		ambient[0] = ambient[1] = ambient[2] = amb;
 		ambient[3] = 1.0f;
-		diffuse[0] = diffuse[1] = diffuse[2] = 0.4f;
+		diffuse[0] = diffuse[1] = diffuse[2] = 0.25f; // headlight
 		diffuse[3] = 1.0f;
-		//material[0] = material[1] = material[2] = 0.8f;
-		//material[3] = 1.0f;
+		sun_diffuse[0] = sun_diffuse[1] = sun_diffuse[2] = sun;
+		sun_diffuse[3] = 1.0f;
+		black[0] = black[1] = black[2] = 0.0f;
+		black[3] = 1.0f;
+
+		// from above, a bit from the side and front, so that no wall is fully dark
+		VectorSet( sun_dir, -0.35f, 0.45f, 0.82f );
+		VectorNormalize( sun_dir, sun_dir );
+		sun_dir[3] = 0;
+
+		qglLightModelfv( GL_LIGHT_MODEL_AMBIENT, black );
 
 		vec3_t vCam, vRotate;
 		VectorSet( vCam, -1, 0, 0 ); //default cam pos
@@ -1422,7 +1565,12 @@ void CamWnd::Cam_Draw(){
 		qglLightfv( GL_LIGHT0, GL_AMBIENT, ambient );
 		qglLightfv( GL_LIGHT0, GL_DIFFUSE, diffuse );
 
+		qglLightfv( GL_LIGHT1, GL_POSITION, sun_dir );
+		qglLightfv( GL_LIGHT1, GL_AMBIENT, black );
+		qglLightfv( GL_LIGHT1, GL_DIFFUSE, sun_diffuse );
+
 		qglEnable( GL_LIGHT0 );
+		qglEnable( GL_LIGHT1 );
 	}
 
 	InitCull();
@@ -1642,12 +1790,28 @@ void CamWnd::Cam_Draw(){
 	// elsewhere using/modifying texture maps between contexts
 	qglBindTexture( GL_TEXTURE_2D, 0 );
 
-	qglFinish();
+	// no qglFinish() here: it forced a CPU/GPU sync every frame; SwapBuffers flushes anyway
 	QE_CheckOpenGLForErrors();
 	//	Sys_EndWait();
 	if ( m_Camera.timing ) {
+		// frame statistics, printed every 2 seconds of continuous redrawing.
+		// Enabled by setting the environment variable RADIANT_CAMTIMING before starting Radiant.
+		static double s_windowStart = 0.0, s_lastFrame = 0.0, s_cpuSum = 0.0;
+		static int s_frames = 0;
 		end = Sys_DoubleTime();
-		Sys_Printf( "Camera: %i ms\n", (int)( 1000 * ( end - start ) ) );
+		if ( s_frames == 0 || start - s_lastFrame > 0.5 ) { // new burst of redraws
+			s_windowStart = start;
+			s_cpuSum = 0.0;
+			s_frames = 0;
+		}
+		s_lastFrame = end;
+		s_cpuSum += end - start;
+		s_frames++;
+		if ( end - s_windowStart >= 2.0 ) {
+			Sys_Printf( "Camera: %.1f fps, %.2f ms avg draw call time (%d frames)\n",
+						s_frames / ( end - s_windowStart ), 1000.0 * s_cpuSum / s_frames, s_frames );
+			s_frames = 0;
+		}
 	}
 
 	for ( brush = active_brushes.next ; brush != &active_brushes ; brush = brush->next )
@@ -1655,6 +1819,145 @@ void CamWnd::Cam_Draw(){
 
 	for ( brush = pList->next ; brush != pList ; brush = brush->next )
 		brush->bCamCulled = false;
+}
+
+
+// =============================================================================
+// multisampled offscreen rendering (anti-aliasing)
+
+#define MS_GL_FRAMEBUFFER           0x8D40
+#define MS_GL_READ_FRAMEBUFFER      0x8CA8
+#define MS_GL_DRAW_FRAMEBUFFER      0x8CA9
+#define MS_GL_RENDERBUFFER          0x8D41
+#define MS_GL_COLOR_ATTACHMENT0     0x8CE0
+#define MS_GL_DEPTH_ATTACHMENT      0x8D00
+#define MS_GL_DEPTH_COMPONENT24     0x81A6
+#define MS_GL_RGBA8                 0x8058
+#define MS_GL_FRAMEBUFFER_COMPLETE  0x8CD5
+#define MS_GL_MAX_SAMPLES           0x8D57
+#define MS_GL_MULTISAMPLE           0x809D
+
+typedef void ( APIENTRY * msGenFn )( GLsizei, GLuint* );
+typedef void ( APIENTRY * msBindFn )( GLenum, GLuint );
+typedef void ( APIENTRY * msDeleteFn )( GLsizei, const GLuint* );
+typedef void ( APIENTRY * msRbStorageFn )( GLenum, GLsizei, GLenum, GLsizei, GLsizei );
+typedef void ( APIENTRY * msFbRbFn )( GLenum, GLenum, GLenum, GLuint );
+typedef GLenum ( APIENTRY * msStatusFn )( GLenum );
+typedef void ( APIENTRY * msBlitFn )( GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum );
+
+static struct {
+	bool tried, ok;
+	msGenFn genFb, genRb;
+	msBindFn bindFb, bindRb;
+	msDeleteFn delFb, delRb;
+	msRbStorageFn rbStorageMs;
+	msFbRbFn fbRb;
+	msStatusFn status;
+	msBlitFn blit;
+} g_ms;
+
+// core name first (OpenGL 3.0 / ARB_framebuffer_object), then the EXT name
+static void* MS_Proc( const char *name ){
+	void *p = (void*)gdk_gl_get_proc_address( name );
+	if ( !p ) {
+		char ext[128];
+		snprintf( ext, sizeof( ext ), "%sEXT", name );
+		p = (void*)gdk_gl_get_proc_address( ext );
+	}
+	return p;
+}
+
+static bool MS_Init(){
+	if ( g_ms.tried ) {
+		return g_ms.ok;
+	}
+	g_ms.tried = true;
+	g_ms.genFb = (msGenFn)MS_Proc( "glGenFramebuffers" );
+	g_ms.genRb = (msGenFn)MS_Proc( "glGenRenderbuffers" );
+	g_ms.bindFb = (msBindFn)MS_Proc( "glBindFramebuffer" );
+	g_ms.bindRb = (msBindFn)MS_Proc( "glBindRenderbuffer" );
+	g_ms.delFb = (msDeleteFn)MS_Proc( "glDeleteFramebuffers" );
+	g_ms.delRb = (msDeleteFn)MS_Proc( "glDeleteRenderbuffers" );
+	g_ms.rbStorageMs = (msRbStorageFn)MS_Proc( "glRenderbufferStorageMultisample" );
+	g_ms.fbRb = (msFbRbFn)MS_Proc( "glFramebufferRenderbuffer" );
+	g_ms.status = (msStatusFn)MS_Proc( "glCheckFramebufferStatus" );
+	g_ms.blit = (msBlitFn)MS_Proc( "glBlitFramebuffer" );
+	g_ms.ok = g_ms.genFb && g_ms.genRb && g_ms.bindFb && g_ms.bindRb && g_ms.delFb && g_ms.delRb
+			  && g_ms.rbStorageMs && g_ms.fbRb && g_ms.status && g_ms.blit;
+	if ( !g_ms.ok ) {
+		Sys_Printf( "Camera anti-aliasing unavailable: framebuffer multisample functions not found\n" );
+	}
+	return g_ms.ok;
+}
+
+void CamWnd::MSAA_Free(){
+	if ( m_msFbo ) {
+		g_ms.bindFb( MS_GL_FRAMEBUFFER, 0 );
+		g_ms.delFb( 1, &m_msFbo );
+		g_ms.delRb( 1, &m_msColor );
+		g_ms.delRb( 1, &m_msDepth );
+	}
+	m_msFbo = m_msColor = m_msDepth = 0;
+	m_msWidth = m_msHeight = m_msSamples = 0;
+}
+
+// Binds the multisampled target (creating / resizing it when needed). Returns false if the frame
+// should just be drawn straight into the window (anti-aliasing off or not available).
+bool CamWnd::MSAA_Begin(){
+	const int wanted = g_PrefsDlg.m_nCamMSAA > 0 ? ( 1 << g_PrefsDlg.m_nCamMSAA ) : 0;
+	if ( wanted == 0 || m_msUnsupported || m_Camera.width < 1 || m_Camera.height < 1 || !MS_Init() ) {
+		if ( m_msFbo ) {
+			MSAA_Free();
+		}
+		return false;
+	}
+
+	if ( m_msFbo && ( m_msWidth != m_Camera.width || m_msHeight != m_Camera.height || m_msSamples != wanted ) ) {
+		MSAA_Free();
+	}
+
+	if ( !m_msFbo ) {
+		GLint maxSamples = 0;
+		qglGetIntegerv( MS_GL_MAX_SAMPLES, &maxSamples );
+		int samples = wanted;
+		while ( samples > maxSamples && samples > 2 )
+			samples /= 2;
+
+		g_ms.genFb( 1, &m_msFbo );
+		g_ms.genRb( 1, &m_msColor );
+		g_ms.genRb( 1, &m_msDepth );
+		g_ms.bindFb( MS_GL_FRAMEBUFFER, m_msFbo );
+		g_ms.bindRb( MS_GL_RENDERBUFFER, m_msColor );
+		g_ms.rbStorageMs( MS_GL_RENDERBUFFER, samples, MS_GL_RGBA8, m_Camera.width, m_Camera.height );
+		g_ms.fbRb( MS_GL_FRAMEBUFFER, MS_GL_COLOR_ATTACHMENT0, MS_GL_RENDERBUFFER, m_msColor );
+		g_ms.bindRb( MS_GL_RENDERBUFFER, m_msDepth );
+		g_ms.rbStorageMs( MS_GL_RENDERBUFFER, samples, MS_GL_DEPTH_COMPONENT24, m_Camera.width, m_Camera.height );
+		g_ms.fbRb( MS_GL_FRAMEBUFFER, MS_GL_DEPTH_ATTACHMENT, MS_GL_RENDERBUFFER, m_msDepth );
+
+		if ( g_ms.status( MS_GL_FRAMEBUFFER ) != MS_GL_FRAMEBUFFER_COMPLETE ) {
+			Sys_Printf( "Camera anti-aliasing unavailable: multisampled framebuffer (%dx) is incomplete\n", samples );
+			MSAA_Free();
+			m_msUnsupported = true;
+			qglGetError();
+			return false;
+		}
+		m_msWidth = m_Camera.width;
+		m_msHeight = m_Camera.height;
+		m_msSamples = wanted;
+		Sys_Printf( "Camera anti-aliasing: %dx multisampled buffer %dx%d\n", samples, m_msWidth, m_msHeight );
+	}
+
+	g_ms.bindFb( MS_GL_FRAMEBUFFER, m_msFbo );
+	qglEnable( MS_GL_MULTISAMPLE );
+	return true;
+}
+
+// copy the multisampled image into the window's back buffer (this resolves the samples)
+void CamWnd::MSAA_End(){
+	g_ms.bindFb( MS_GL_READ_FRAMEBUFFER, m_msFbo );
+	g_ms.bindFb( MS_GL_DRAW_FRAMEBUFFER, 0 );
+	g_ms.blit( 0, 0, m_msWidth, m_msHeight, 0, 0, m_msWidth, m_msHeight, GL_COLOR_BUFFER_BIT, GL_NEAREST );
+	g_ms.bindFb( MS_GL_FRAMEBUFFER, 0 );
 }
 
 void CamWnd::OnExpose(){
@@ -1675,7 +1978,11 @@ void CamWnd::OnExpose(){
 
 		Patch_LODMatchAll(); // spog
 
+		const bool msaa = MSAA_Begin();
 		Cam_Draw();
+		if ( msaa ) {
+			MSAA_End();
+		}
 		QE_CheckOpenGLForErrors();
 
 		m_XORRectangle.set( rectangle_t() );

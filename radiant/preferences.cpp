@@ -76,6 +76,13 @@
 #define ANGLESPEED_KEY          "AngleSpeed"
 #define SETGAME_KEY             "UseSetGame"
 #define CAMXYUPDATE_KEY         "CamXYUpdate"
+#define CAMMSAA_KEY             "CamMSAA"
+#define CAMWIREOVERLAY_KEY      "CamWireOverlay"
+#define CAMWIREBRIGHT_KEY       "CamWireBright"
+#define CAMWIREWIDTH_KEY        "CamWireWidth"
+#define CAMWIREOPACITY_KEY      "CamWireOpacity5"
+#define CAMLIGHTAMBIENT_KEY     "CamLightAmbient4"
+#define CAMLIGHTKEY_KEY         "CamLightKey4"
 #define CAMDRAGMULTISELECT_KEY  "CamDragMultiSelect"
 #define CAMFREELOOK_KEY         "CamFreeLook"
 #define CAMINVERSEMOUSE_KEY     "CamInverseMouse"
@@ -598,6 +605,13 @@ PrefsDlg::PrefsDlg (){
 	m_fTinySize = 0.5;
 	m_bCleanTiny = FALSE;
 	m_bCamXYUpdate = TRUE;
+	m_nCamMSAA = 2;
+	m_bCamWireOverlay = TRUE;
+	m_nCamWireBright = 75;
+	m_nCamWireOpacity = 30;
+	m_nCamWireWidth = 50;
+	m_nCamLightAmbient = 70;
+	m_nCamLightKey = 45;
 	m_bCamDragMultiSelect = FALSE;
 	m_bCamFreeLook = TRUE;
 	m_bCamFreeLookStrafe = FALSE;
@@ -1943,6 +1957,61 @@ void PrefsDlg::BuildDialog(){
 	gtk_widget_show( check );
 	AddDialogData( check, &m_bCamXYUpdate, DLG_CHECK_BOOL );
 
+	// Camera anti-aliasing (multisampling); the pixel format is chosen at startup
+	hbox2 = gtk_hbox_new( FALSE, 5 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox2, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox2 );
+
+	label = gtk_label_new( _( "Camera anti-aliasing:" ) );
+	gtk_box_pack_start( GTK_BOX( hbox2 ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+
+	combo = gtk_combo_box_text_new();
+	gtk_box_pack_start( GTK_BOX( hbox2 ), combo, FALSE, FALSE, 0 );
+	gtk_widget_show( combo );
+	AddDialogData( combo, &m_nCamMSAA, DLG_COMBO_BOX_INT );
+	gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( combo ), _( "Off" ) );
+	gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( combo ), "2x" );
+	gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( combo ), "4x" );
+	gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( combo ), "8x" );
+	gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( combo ), "16x" );
+
+	// Wireframe overlay on top of the textured / solid camera view
+	check = gtk_check_button_new_with_label( _( "Wireframe overlay in camera view" ) );
+	gtk_box_pack_start( GTK_BOX( vbox ), check, FALSE, FALSE, 0 );
+	gtk_widget_show( check );
+	AddDialogData( check, &m_bCamWireOverlay, DLG_CHECK_BOOL );
+
+	{
+		// label + slider rows: overlay look and camera light rig (the light rig needs "OpenGL Lighting")
+		struct { const char *text; int *value; } rows[] = {
+			{ N_( "Overlay brightness" ), &m_nCamWireBright },
+			{ N_( "Overlay opacity" ), &m_nCamWireOpacity },
+			{ N_( "Overlay line width (% of a pixel)" ), &m_nCamWireWidth },
+			{ N_( "Light: ambient (OpenGL lighting)" ), &m_nCamLightAmbient },
+			{ N_( "Light: sun from above (OpenGL lighting)" ), &m_nCamLightKey },
+		};
+		for ( size_t r = 0; r < sizeof( rows ) / sizeof( rows[0] ); r++ )
+		{
+			hbox2 = gtk_hbox_new( FALSE, 5 );
+			gtk_box_pack_start( GTK_BOX( vbox ), hbox2, FALSE, FALSE, 0 );
+			gtk_widget_show( hbox2 );
+
+			label = gtk_label_new( _( rows[r].text ) );
+			gtk_widget_set_size_request( label, 230, -1 );
+			gtk_misc_set_alignment( GTK_MISC( label ), 0.0, 0.5 );
+			gtk_box_pack_start( GTK_BOX( hbox2 ), label, FALSE, FALSE, 0 );
+			gtk_widget_show( label );
+
+			adj = GTK_ADJUSTMENT( gtk_adjustment_new( 50, 0, 100, 1, 10, 0 ) );
+			AddDialogData( G_OBJECT( adj ), rows[r].value, DLG_ADJ_INT );
+			scale = gtk_hscale_new( GTK_ADJUSTMENT( adj ) );
+			gtk_scale_set_digits( GTK_SCALE( scale ), 0 );
+			gtk_box_pack_start( GTK_BOX( hbox2 ), scale, TRUE, TRUE, 0 );
+			gtk_widget_show( scale );
+		}
+	}
+
 	// Add the page to the notebook
 	page_index = gtk_notebook_append_page( GTK_NOTEBOOK( notebook ), pageframe, preflabel );
 	assert( page_index == PTAB_CAMERA );
@@ -2995,6 +3064,13 @@ void PrefsDlg::LoadPrefs(){
 	mLocalPrefs.GetPref( ANGLESPEED_KEY,         &m_nAngleSpeed,         3 );
 	mLocalPrefs.GetPref( SETGAME_KEY,            &m_bSetGame,            FALSE );
 	mLocalPrefs.GetPref( CAMXYUPDATE_KEY,        &m_bCamXYUpdate,        TRUE );
+	mLocalPrefs.GetPref( CAMMSAA_KEY,            &m_nCamMSAA,            2 );
+	mLocalPrefs.GetPref( CAMWIREOVERLAY_KEY,     &m_bCamWireOverlay,     TRUE );
+	mLocalPrefs.GetPref( CAMWIREBRIGHT_KEY,      &m_nCamWireBright,      75 );
+	mLocalPrefs.GetPref( CAMWIREOPACITY_KEY,     &m_nCamWireOpacity,     30 );
+	mLocalPrefs.GetPref( CAMWIREWIDTH_KEY,       &m_nCamWireWidth,       50 );
+	mLocalPrefs.GetPref( CAMLIGHTAMBIENT_KEY,    &m_nCamLightAmbient,    70 );
+	mLocalPrefs.GetPref( CAMLIGHTKEY_KEY,        &m_nCamLightKey,        45 );
 	mLocalPrefs.GetPref( CAMDRAGMULTISELECT_KEY, &m_nCamDragMultiSelect, TRUE );
 	mLocalPrefs.GetPref( CAMFREELOOK_KEY,        &m_bCamFreeLook,        TRUE );
 	mLocalPrefs.GetPref( CAMINVERSEMOUSE_KEY,    &m_bCamInverseMouse,    FALSE );

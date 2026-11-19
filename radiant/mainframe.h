@@ -215,6 +215,7 @@ struct SKeyInfo
 #define ID_SHOW_ENTITIES                32990
 #define ID_VIEW_ENTITIESAS_WIREFRAME    32991
 #define ID_VIEW_OPENGLLIGHTING          32998
+#define ID_VIEW_CAMWIREOVERLAY          32999
 #define ID_EDIT_SAVEPREFAB              33001
 #define ID_CURVE_MOREENDCAPSBEVELS_SQUAREENDCAP 33002
 #define ID_CURVE_MOREENDCAPSBEVELS_SQUAREBEVEL 33003
@@ -869,6 +870,7 @@ void OnPluginsRefresh();
 void OnTexturesShowall();
 void OnPatchInspector();
 void OnViewOpengllighting();
+void OnViewCamWireOverlay();
 void OnSelectAll();
 void OnCurveFreeze();
 void OnCurveUnFreeze();

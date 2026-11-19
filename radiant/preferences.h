@@ -610,6 +610,13 @@ bool m_bSnapShots;
 float m_fTinySize;
 bool m_bCleanTiny;
 bool m_bCamXYUpdate;
+int m_nCamMSAA;                 // camera anti-aliasing: combo index, 0 = off, n = 2^n samples (needs restart)
+bool m_bCamWireOverlay;         // thin wireframe drawn over the textured/solid camera view
+int m_nCamWireBright;           // overlay line brightness, 0..100 (grey level)
+int m_nCamWireOpacity;          // overlay line opacity, 0..100
+int m_nCamWireWidth;            // overlay line width in percent of a pixel (10..100)
+int m_nCamLightAmbient;         // camera light rig (OpenGL lighting): ambient level, 0..100
+int m_nCamLightKey;             // camera light rig: fixed "sun" light from above, 0..100
 int m_nCamDragMultiSelect;
 bool m_bCamDragMultiSelect;
 bool m_bCamFreeLook;

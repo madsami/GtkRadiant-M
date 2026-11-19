@@ -34,6 +34,10 @@
 #if defined( __linux__ ) || defined( __BSD__ ) || defined( __APPLE__ )
   #include <unistd.h>
 #endif
+#ifdef _WIN32
+  #include <mmsystem.h>
+  #pragma comment( lib, "winmm.lib" )
+#endif
 #include "gtkmisc.h"
 #include "groupdialog.h"
 #include "patchdialog.h"
@@ -514,6 +518,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 			  break;
 		  case ID_VIEW_CUBICCLIPPING: g_pParentWnd->OnViewCubicclipping(); break;
 		  case ID_VIEW_OPENGLLIGHTING: g_pParentWnd->OnViewOpengllighting(); break;
+		  case ID_VIEW_CAMWIREOVERLAY: g_pParentWnd->OnViewCamWireOverlay(); break;
 		  case ID_SELECTION_DRAGEDGES: g_pParentWnd->OnSelectionDragedges(); break;
 		  case ID_SELECTION_DRAGVERTECIES: g_pParentWnd->OnSelectionDragvertecies(); break;
 		  case ID_SELECTION_CLONE: g_pParentWnd->OnSelectionClone(); break;
@@ -1239,6 +1244,9 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 	item = create_check_menu_item_with_mnemonic( menu, _( "OpenGL Lighting" ),
 												 G_CALLBACK( HandleCommand ), ID_VIEW_OPENGLLIGHTING, FALSE );
 	g_object_set_data( G_OBJECT( window ), "menu_view_opengllighting", item );
+	item = create_check_menu_item_with_mnemonic( menu, _( "Camera Wireframe Overlay" ),
+												 G_CALLBACK( HandleCommand ), ID_VIEW_CAMWIREOVERLAY, FALSE );
+	g_object_set_data( G_OBJECT( window ), "menu_view_camwireoverlay", item );
 
 	// Selection menu
 	menu = create_sub_menu_with_mnemonic( menu_bar, _( "_Selection" ) );
@@ -3195,7 +3203,13 @@ void MainFrame::Create(){
 
 	SetActiveXY( m_pXYWnd );
 
-	s_idle_id = g_timeout_add( 25, mainframe_idle, this );
+#ifdef _WIN32
+	// default Windows timer granularity is ~15.6 ms, which would make the idle tick (camera movement
+	// and redraw) run at about 32 Hz no matter what interval is asked for
+	timeBeginPeriod( 1 );
+#endif
+	// 8 ms instead of 25 ms: camera redraw rate is bound by this tick (the work in it is only done when needed)
+	s_idle_id = g_timeout_add( 8, mainframe_idle, this );
 
 	QGL_InitExtensions();
 
@@ -3531,6 +3545,9 @@ void MainFrame::OnDestroy(){
 #endif
 	if ( s_idle_id ) {
 		g_source_remove( s_idle_id );
+#ifdef _WIN32
+		timeEndPeriod( 1 );
+#endif
 	}
 	if ( m_nTimer ) {
 		g_source_remove( m_nTimer );
@@ -4098,6 +4115,8 @@ void MainFrame::SetButtonMenuStates(){
 	gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM( item ), ( g_PrefsDlg.m_bCubicClipping ) ? TRUE : FALSE );
 	item  = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_view_opengllighting" ) );
 	gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM( item ), ( g_PrefsDlg.m_bGLLighting ) ? TRUE : FALSE );
+	item  = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_view_camwireoverlay" ) );
+	gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM( item ), ( g_PrefsDlg.m_bCamWireOverlay ) ? TRUE : FALSE );
 	item  = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_snaptogrid" ) );
 	gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM( item ), ( g_PrefsDlg.m_bSnap ) ? TRUE : FALSE );
 
@@ -4198,7 +4217,7 @@ void MainFrame::RoutineProcessing(){
 
 	if ( m_bDoLoop ) {
 		double time = 0.0;
-		double oldtime = 0.0;
+		static double oldtime = 0.0; // was not static: the delta was always clamped, i.e. a constant
 		double delta = 0.0;
 
 /*    // checking KeyState works right
@@ -4220,8 +4239,8 @@ void MainFrame::RoutineProcessing(){
 		time = Sys_DoubleTime();
 		delta = time - oldtime;
 		oldtime = time;
-		if ( delta > 0.2 ) {
-			delta = 0.2;
+		if ( delta > 0.1 ) {
+			delta = 0.1;
 		}
 
 		// update the BSP process watcher
@@ -4231,7 +4250,8 @@ void MainFrame::RoutineProcessing(){
 
 		// run time dependant behavior
 		if ( m_pCamWnd ) {
-			m_pCamWnd->Cam_MouseControl( delta );
+			m_pCamWnd->Cam_KeyControl( (float)delta );
+			m_pCamWnd->Cam_MouseControl( 0.2f, (float)delta );
 		}
 
 		if ( g_nUpdateBits ) {
@@ -5451,6 +5471,16 @@ void MainFrame::OnViewOpengllighting(){
 	g_bIgnoreCommands++;
 	gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM( item ), g_PrefsDlg.m_bGLLighting ? TRUE : FALSE );
 	Sys_UpdateWindows( W_XY | W_CAMERA );
+	g_bIgnoreCommands--;
+}
+
+void MainFrame::OnViewCamWireOverlay(){
+	GtkWidget *item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_view_camwireoverlay" ) );
+	g_PrefsDlg.m_bCamWireOverlay ^= 1;
+	g_PrefsDlg.SavePrefs();
+	g_bIgnoreCommands++;
+	gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM( item ), g_PrefsDlg.m_bCamWireOverlay ? TRUE : FALSE );
+	Sys_UpdateWindows( W_CAMERA );
 	g_bIgnoreCommands--;
 }
 

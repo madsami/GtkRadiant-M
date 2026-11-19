@@ -99,7 +99,8 @@ void BenchMark();
 CamWnd();
 virtual ~CamWnd();
 camera_t *Camera(){return &m_Camera; };
-void Cam_MouseControl( float dtime );
+void Cam_MouseControl( float dtime, float realDt = -1.0f );
+void Cam_KeyControl( float dtime );
 void Cam_ChangeFloor( qboolean up );
 void ToggleFreeMove();
 bool m_bFreeMove;
@@ -108,7 +109,6 @@ protected:
 void Cam_Init();
 void Cam_BuildMatrix();
 void Cam_PositionDrag();
-void Cam_KeyControl( float dtime );
 void Cam_MouseDown( int x, int y, int buttons );
 void Cam_MouseUp( int x, int y, int buttons );
 void Cam_MouseMoved( int x, int y, int buttons );
@@ -116,6 +116,16 @@ void InitCull();
 qboolean CullBrush( brush_t *b );
 void Cam_Draw();
 void Cam_DrawStuff();
+void Cam_DrawWireOverlay();
+
+// Anti-aliasing: the scene is rendered into a multisampled offscreen buffer and resolved into the window,
+// which keeps the window itself on a plain pixel format (a multisampled window format came out gamma-shifted).
+bool MSAA_Begin();
+void MSAA_End();
+void MSAA_Free();
+unsigned int m_msFbo, m_msColor, m_msDepth;
+int m_msWidth, m_msHeight, m_msSamples;
+bool m_msUnsupported;
 void Cam_DrawBrushes( int mode );
 void Cam_DrawBrush( brush_t *b, int mode );
 

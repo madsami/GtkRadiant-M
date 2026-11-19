@@ -442,7 +442,11 @@ void Brush_RebuildBrush( brush_t *b, vec3_t vMins, vec3_t vMaxs ){
 
 	for ( j = 0; j < 3; j++ )
 	{
-		if ( (int)vMins[j] == (int)vMaxs[j] ) {
+		// A flat patch has a (nearly) zero thickness along one axis. The test used to compare
+		// the truncated values, so bounds such as 63.99999 .. 64.0 (float noise from scaling or
+		// snapping) straddled a whole number, were not padded and gave brush planes without a
+		// normal. Any extent under a unit gets padded.
+		if ( vMaxs[j] - vMins[j] < 1.0f ) {
 			vMins[j] -= 4;
 			vMaxs[j] += 4;
 		}
@@ -3950,6 +3954,15 @@ static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out ){
 			i = 2 * k + 1;
 			for ( int a = 0; a < 3; a++ )
 			{
+				if ( fabsf( A[a] - B[a] ) < 0.01f && fabsf( u[a] ) < 0.001f && fabsf( v[a] ) < 0.001f ) {
+					// the arc lies in a plane of constant a (a flat ring): the point belongs in that
+					// plane as well, snapping it to the grid would bend a flat patch
+					out->v[i][j][a] = A[a];
+					if ( fabsf( A[a] - p->ctrl[i][j].xyz[a] ) > 0.0001f ) {
+						changed = true;
+					}
+					continue;
+				}
 				float corner = 0.5f * ( ( A[a] + s * u[a] ) + ( B[a] + t * v[a] ) );
 				float mid = ( A[a] + B[a] ) * 0.5f;
 				float val = floorf( ( corner + sc * ( mid - corner ) ) / step + 0.5f ) * step;

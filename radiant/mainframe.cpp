@@ -181,6 +181,17 @@ SCommandInfo g_Commands[] =
 	{"SetGrid128", GDK_KEY_8, 0, ID_GRID_128, "menu_grid_128"},
 	{"SetGrid256", '9', 0, ID_GRID_256, "menu_grid_256"},
 	{"SetGrid256", GDK_KEY_9, 0, ID_GRID_256, "menu_grid_256"},
+	// numpad twins of the number row (own command names, so shortcuts.ini entries for the number row don't clobber them)
+	{"ToggleGridNumPad", GDK_KEY_KP_0, 0, ID_GRID_TOGGLE, "menu_grid_toggle"},
+	{"SetGrid1NumPad", GDK_KEY_KP_1, 0, ID_GRID_1, "menu_grid_1"},
+	{"SetGrid2NumPad", GDK_KEY_KP_2, 0, ID_GRID_2, "menu_grid_2"},
+	{"SetGrid4NumPad", GDK_KEY_KP_3, 0, ID_GRID_4, "menu_grid_4"},
+	{"SetGrid8NumPad", GDK_KEY_KP_4, 0, ID_GRID_8, "menu_grid_8"},
+	{"SetGrid16NumPad", GDK_KEY_KP_5, 0, ID_GRID_16, "menu_grid_16"},
+	{"SetGrid32NumPad", GDK_KEY_KP_6, 0, ID_GRID_32, "menu_grid_32"},
+	{"SetGrid64NumPad", GDK_KEY_KP_7, 0, ID_GRID_64, "menu_grid_64"},
+	{"SetGrid128NumPad", GDK_KEY_KP_8, 0, ID_GRID_128, "menu_grid_128"},
+	{"SetGrid256NumPad", GDK_KEY_KP_9, 0, ID_GRID_256, "menu_grid_256"},
 	{"DragEdges", GDK_KEY_E, 0, ID_SELECTION_DRAGEDGES, "menu_selection_dragedges"},
 	{"DragVertices", GDK_KEY_V, 0, ID_SELECTION_DRAGVERTECIES, "menu_selection_dragvertecies"},
 	{"ViewEntityInfo", GDK_KEY_N, 0, ID_VIEW_ENTITY, "menu_view_entity"},
@@ -419,7 +430,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 			g_pParentWnd->OnViewNearest( id );
 		}
 	}
-	else if ( id >= ID_GRID_025 && id <= ID_GRID_256 ) {
+	else if ( id >= ID_GRID_0125 && id <= ID_GRID_512 ) {
 		g_pParentWnd->OnGrid( id );
 	}
 	else if ( id >= ID_PLUGIN_START && id <= ID_PLUGIN_END ) {
@@ -1353,7 +1364,10 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		menu_tearoff( menu );
 	}
 
-	item = create_radio_menu_item_with_mnemonic( menu, NULL, _( "Grid0.25" ),
+	item = create_radio_menu_item_with_mnemonic( menu, NULL, _( "Grid0.125" ),
+												 G_CALLBACK( HandleCommand ), ID_GRID_0125, FALSE );
+	g_object_set_data( G_OBJECT( window ), "menu_grid_0125", item );
+	item = create_radio_menu_item_with_mnemonic( menu, item, _( "Grid0.25" ),
 												 G_CALLBACK( HandleCommand ), ID_GRID_025, FALSE );
 	g_object_set_data( G_OBJECT( window ), "menu_grid_025", item );
 	item = create_radio_menu_item_with_mnemonic( menu, item, _( "Grid0.5" ),
@@ -1386,6 +1400,9 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 	item = create_radio_menu_item_with_mnemonic( menu, item, _( "Grid256" ),
 												 G_CALLBACK( HandleCommand ), ID_GRID_256, FALSE );
 	g_object_set_data( G_OBJECT( window ), "menu_grid_256", item );
+	item = create_radio_menu_item_with_mnemonic( menu, item, _( "Grid512" ),
+												 G_CALLBACK( HandleCommand ), ID_GRID_512, FALSE );
+	g_object_set_data( G_OBJECT( window ), "menu_grid_512", item );
 	menu_separator( menu );
 	item = create_check_menu_item_with_mnemonic( menu, _( "Snap to grid" ),
 												 G_CALLBACK( HandleCommand ), ID_SNAPTOGRID, TRUE );
@@ -3825,8 +3842,10 @@ void MainFrame::ShowMenuItemKeyBindings( GtkWidget* window ){
 			// NOTE TTimo this is the important place where all the shortcuts are binded
 			Sys_Printf( "Calling gtk_widget_add_accelerator on command: %s menu: %s key: %d mods: %d\n", g_Commands[i].m_strCommand, g_Commands[i].m_strMenu, g_Commands[i].m_nKey, mods );
 #endif
+			// numpad digits are extra keys for the same menu item: keep them out of the displayed accelerator text
+			const bool numpadDigit = ( g_Commands[i].m_nKey >= GDK_KEY_KP_0 && g_Commands[i].m_nKey <= GDK_KEY_KP_9 );
 			gtk_widget_add_accelerator( GTK_WIDGET( item ), "activate", accel, g_Commands[i].m_nKey,
-										(GdkModifierType)mods, GTK_ACCEL_VISIBLE );
+										(GdkModifierType)mods, numpadDigit ? (GtkAccelFlags)0 : GTK_ACCEL_VISIBLE );
 		}
 		else
 		{
@@ -5187,25 +5206,29 @@ void MainFrame::OnView100(){
 	Sys_UpdateWindows( W_XY | W_XY_OVERLAY );
 }
 
+// maximum zoom of the 2D views in pixels per unit (NetRadiant allows 64; this used to be 30, which
+// made the sub-unit grids (0.125 and 0.25) impossible to zoom into far enough to see their cells)
+#define XY_MAX_SCALE 64
+
 void MainFrame::OnViewZoomin(){
 	if ( m_pXYWnd && m_pXYWnd->Active() ) {
 		m_pXYWnd->SetScale( m_pXYWnd->Scale() * 5.0 / 4 );
-		if ( m_pXYWnd->Scale() > 30 ) {
-			m_pXYWnd->SetScale( 30 );
+		if ( m_pXYWnd->Scale() > XY_MAX_SCALE ) {
+			m_pXYWnd->SetScale( XY_MAX_SCALE );
 		}
 	}
 
 	if ( m_pXZWnd && m_pXZWnd->Active() ) {
 		m_pXZWnd->SetScale( m_pXZWnd->Scale() * 5.0 / 4 );
-		if ( m_pXZWnd->Scale() > 30 ) {
-			m_pXZWnd->SetScale( 30 );
+		if ( m_pXZWnd->Scale() > XY_MAX_SCALE ) {
+			m_pXZWnd->SetScale( XY_MAX_SCALE );
 		}
 	}
 
 	if ( m_pYZWnd && m_pYZWnd->Active() ) {
 		m_pYZWnd->SetScale( m_pYZWnd->Scale() * 5.0 / 4 );
-		if ( m_pYZWnd->Scale() > 30 ) {
-			m_pYZWnd->SetScale( 30 );
+		if ( m_pYZWnd->Scale() > XY_MAX_SCALE ) {
+			m_pYZWnd->SetScale( XY_MAX_SCALE );
 		}
 	}
 
@@ -5920,8 +5943,52 @@ void MainFrame::OnBspCommand( unsigned int nID ){
 	}
 }
 
+// moves the radio "dot" of the Grid menu (also when it is torn off) to the current grid size
+static void GridMenu_SyncItem( GtkWidget *frame ){
+	const float g = g_qeglobals.d_gridsize;
+	const char *name = NULL;
+	if ( g == 0.125f ) {
+		name = "menu_grid_0125";
+	}
+	else if ( g == 0.25f ) {
+		name = "menu_grid_025";
+	}
+	else if ( g == 0.5f ) {
+		name = "menu_grid_05";
+	}
+	else
+	{
+		switch ( (int)g )
+		{
+		case   1: name = "menu_grid_1"; break;
+		case   2: name = "menu_grid_2"; break;
+		case   4: name = "menu_grid_4"; break;
+		case   8: name = "menu_grid_8"; break;
+		case  16: name = "menu_grid_16"; break;
+		case  32: name = "menu_grid_32"; break;
+		case  64: name = "menu_grid_64"; break;
+		case 128: name = "menu_grid_128"; break;
+		case 256: name = "menu_grid_256"; break;
+		case 512: name = "menu_grid_512"; break;
+		}
+	}
+	if ( name == NULL ) {
+		return;
+	}
+	GtkWidget *item = GTK_WIDGET( g_object_get_data( G_OBJECT( frame ), name ) );
+	if ( item != NULL && !gtk_check_menu_item_get_active( GTK_CHECK_MENU_ITEM( item ) ) ) {
+		g_bIgnoreCommands++;
+		gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM( item ), TRUE );
+		g_bIgnoreCommands--;
+	}
+}
+
 void MainFrame::OnGrid( unsigned int nID ){
-	if ( nID == ID_GRID_025 ) {
+	if ( nID == ID_GRID_0125 ) {
+		g_qeglobals.d_gridsize = 0.125f;
+		g_qeglobals.d_bSmallGrid = true;
+	}
+	else if ( nID == ID_GRID_025 ) {
 		g_qeglobals.d_gridsize = 0.25f;
 		g_qeglobals.d_bSmallGrid = true;
 	}
@@ -5942,12 +6009,14 @@ void MainFrame::OnGrid( unsigned int nID ){
 		case ID_GRID_64: g_qeglobals.d_gridsize = 6; break;
 		case ID_GRID_128: g_qeglobals.d_gridsize = 7; break;
 		case ID_GRID_256: g_qeglobals.d_gridsize = 8; break;
+		case ID_GRID_512: g_qeglobals.d_gridsize = 9; break;
 		}
 		g_qeglobals.d_gridsize = 1 << (int)g_qeglobals.d_gridsize;
 		g_qeglobals.d_bSmallGrid = false;
 	}
 
 	SetGridStatus();
+	GridMenu_SyncItem( m_pWidget ); // keyboard shortcuts don't go through the menu items
 
 	// SnapTToGrid option: need to check everywhere the grid size is changed
 	// this is a bit clumsy, have to do in OnGrid OnGridPrev and OnGridNext
@@ -7590,6 +7659,11 @@ void MainFrame::OnGridPrev(){
 		g_qeglobals.d_bSmallGrid = true;
 		item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_025" ) );
 	}
+	else if ( g_qeglobals.d_gridsize == 0.25 ) {
+		g_qeglobals.d_gridsize = 0.125;
+		g_qeglobals.d_bSmallGrid = true;
+		item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_0125" ) );
+	}
 	else if ( g_qeglobals.d_gridsize > 1 ) {
 		g_qeglobals.d_gridsize = (int)g_qeglobals.d_gridsize >> 1;
 		g_qeglobals.d_bSmallGrid = false;
@@ -7605,6 +7679,7 @@ void MainFrame::OnGridPrev(){
 		case  64: item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_64" ) ); break;
 		case 128: item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_128" ) ); break;
 		case 256: item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_256" ) ); break;
+		case 512: item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_512" ) ); break;
 		default: return;
 		}
 
@@ -7629,7 +7704,12 @@ void MainFrame::OnGridPrev(){
 
 void MainFrame::OnGridNext(){
 	GtkWidget *item;
-	if ( g_qeglobals.d_gridsize == 0.25 ) {
+	if ( g_qeglobals.d_gridsize == 0.125 ) {
+		g_qeglobals.d_gridsize = 0.25;
+		g_qeglobals.d_bSmallGrid = true;
+		item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_025" ) );
+	}
+	else if ( g_qeglobals.d_gridsize == 0.25 ) {
 		g_qeglobals.d_gridsize = 0.5;
 		g_qeglobals.d_bSmallGrid = true;
 		item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_05" ) );
@@ -7639,7 +7719,7 @@ void MainFrame::OnGridNext(){
 		g_qeglobals.d_bSmallGrid = false;
 		item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_1" ) );
 	}
-	else if ( g_qeglobals.d_gridsize < 256 ) {
+	else if ( g_qeglobals.d_gridsize < 512 ) {
 		g_qeglobals.d_gridsize = (int)g_qeglobals.d_gridsize << 1;
 		g_qeglobals.d_bSmallGrid = false;
 
@@ -7654,6 +7734,7 @@ void MainFrame::OnGridNext(){
 		case  64: item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_64" ) ); break;
 		case 128: item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_128" ) ); break;
 		case 256: item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_256" ) ); break;
+		case 512: item = GTK_WIDGET( g_object_get_data( G_OBJECT( m_pWidget ), "menu_grid_512" ) ); break;
 		default:  item = NULL;
 		}
 

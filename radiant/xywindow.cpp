@@ -2193,25 +2193,39 @@ void XYWnd::XY_DrawGrid(){
 	float x, y, xb, xe, yb, ye;
 	float w, h;
 	char text[32];
-	int step, stepx, stepy, colour;
-	step = stepx = stepy = MAX( 64, (int)g_qeglobals.d_gridsize );
+	int colour;
 
-/*
-	int stepSize = (int)(8 / m_fScale);
-	if (stepSize > step)
-	{
-		int i;
-		for (i = 1; i < stepSize; i <<= 1);
-		step = i;
+	// Grid layout, as in NetRadiant: the minor grid is the snap grid, coarsened (x2) until its lines are at
+	// least 4 pixels apart; the major grid is a power-of-two multiple of it, in steps of 8x (1, 8, 64, 512...),
+	// at least 32 pixels apart. Zooming therefore always shows a readable major/minor pair.
+	const float gridsize = ( g_qeglobals.d_gridsize >= 0.125f ) ? g_qeglobals.d_gridsize : 1.0f;
+	float step, minor_step, stepx, stepy;
+	step = minor_step = stepx = stepy = gridsize;
+
+	int minor_power = (int)floor( log( (double)gridsize ) / log( 2.0 ) + 0.5 );
+	while ( ( minor_step * m_fScale ) <= 4.0f ) { // minor grid spacing at least 4 pixels on the screen
+		++minor_power;
+		minor_step *= 2;
 	}
-*/
 
-	//Sys_Printf("scale: %f\n", m_fScale);
-	//Sys_Printf("step before: %i\n", step);
-	//Sys_Printf("scaled step: %f\n", step * m_fScale);
-	while ( ( step * m_fScale ) < 4.0f ) // make sure major grid spacing is at least 4 pixels on the screen
-		step *= 8;
-	//Sys_Printf("step after: %i\n", step);
+	int power = minor_power;
+	step = (float)pow( 2.0, power );
+	if ( minor_step < 1.0f ) {
+		// Sub-unit grids (0.5, 0.25, 0.125): the unit grid becomes the major grid, and each unit cell is
+		// subdivided 2x2 / 4x4 / 8x8 by the minor lines. (minor_step < 1 here means the minor lines are
+		// already >= 4 px apart, so the unit lines are at least 8 px apart.)
+		power = 0;
+		step = 1.0f;
+	}
+	else {
+		while ( ( power % 3 ) != 0 || ( step * m_fScale ) <= 32.0f ) { // major grid spacing at least 32 pixels
+			++power;
+			step = (float)pow( 2.0, power );
+		}
+	}
+
+	const int mask = ( 1 << ( power - minor_power ) ) - 1;
+
 	while ( ( stepx * m_fScale ) < 40.0f ) // text step x must be at least 40 pixels
 		stepx *= 2;
 	while ( ( stepy * m_fScale ) < 40.0f ) // text step y must be at least 40 pixels
@@ -2259,44 +2273,36 @@ void XYWnd::XY_DrawGrid(){
 
 	// djbob
 	// draw minor blocks
-	if ( m_fScale > .1 && g_qeglobals.d_showgrid && g_qeglobals.d_gridsize * m_fScale >= 4 ) {
-		if ( g_qeglobals.d_gridsize < 1 ) {
-			colour = COLOR_GRIDMINOR_ALT;
-		}
-		else{
-			colour = COLOR_GRIDMINOR;
-		}
+	if ( g_qeglobals.d_showgrid && mask != 0 ) {
+		// sub-unit grids use the normal grid colours too (they used to switch to the "alt" colours, which
+		// default to red), so they look like the unit grid with finer subdivisions, as in NetRadiant
+		colour = COLOR_GRIDMINOR;
 
 		if ( COLORS_DIFFER( colour, COLOR_GRIDBACK ) ) {
 			qglColor3fv( g_qeglobals.d_savedinfo.colors[colour] );
 
 			qglBegin( GL_LINES );
-			for ( x = xb ; x < xe ; x += g_qeglobals.d_gridsize )
+			int i = 0;
+			for ( x = xb ; x < xe ; x += minor_step, ++i )
 			{
-				if ( !( (int)x & ( step - 1 ) ) && !( (int)x - x ) ) {
-					continue;
+				if ( ( i & mask ) != 0 ) { // skip positions the major grid draws
+					qglVertex2f( x, yb );
+					qglVertex2f( x, ye );
 				}
-				qglVertex2f( x, yb );
-				qglVertex2f( x, ye );
 			}
-			for ( y = yb ; y < ye ; y += g_qeglobals.d_gridsize )
+			i = 0;
+			for ( y = yb ; y < ye ; y += minor_step, ++i )
 			{
-				if ( !( (int)y & ( step - 1 ) )  && !( (int)y - y ) ) {
-					continue;
+				if ( ( i & mask ) != 0 ) {
+					qglVertex2f( xb, y );
+					qglVertex2f( xe, y );
 				}
-				qglVertex2f( xb, y );
-				qglVertex2f( xe, y );
 			}
 			qglEnd();
 		}
 	}
 
-	if ( g_qeglobals.d_gridsize < 1 ) {
-		colour = COLOR_GRIDMAJOR_ALT;
-	}
-	else{
-		colour = COLOR_GRIDMAJOR;
-	}
+	colour = COLOR_GRIDMAJOR;
 
 	// draw major blocks
 	if ( COLORS_DIFFER( colour, COLOR_GRIDBACK ) ) {
@@ -2345,16 +2351,16 @@ void XYWnd::XY_DrawGrid(){
 		float bottomOffset = ( pixelsButtomCushion - gtk_glwidget_font_descent() ) / m_fScale;
 
 		// This renders the numbers along varying X on top of the grid view (labels vertical grid lines).
-		for ( x = xb - ( (int) xb ) % stepx; x <= xe; x += stepx ) {
+		for ( x = xb - fmod( xb, stepx ); x <= xe; x += stepx ) {
 			qglRasterPos2f( x + leftCushion, yPosLabelsTop );
-			sprintf( text, "%i", (int) x );
+			sprintf( text, "%g", x );
 			gtk_glwidget_print_string( text );
 		}
 
 		// This renders the numbers along varying Y on the left of the grid view (labels horizontal grid lines).
-		for ( y = yb - ( (int) yb ) % stepy; y <= ye; y += stepy ) {
+		for ( y = yb - fmod( yb, stepy ); y <= ye; y += stepy ) {
 			qglRasterPos2f( xPosLabelsLeft, y + bottomOffset );
-			sprintf( text, "%i", (int) y );
+			sprintf( text, "%g", y );
 			gtk_glwidget_print_string( text );
 		}
 

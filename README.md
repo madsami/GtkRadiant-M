@@ -34,5 +34,9 @@ The build is the same as upstream's. On Windows it builds with Visual Studio 202
 License
 -------
 
-GPL, like upstream; see [LICENSE](LICENSE). Thanks to TTimo and the GtkRadiant contributors, and to garux and the
+GPL, like upstream; see [LICENSE](LICENSE) (GtkRadiant mixes GPL, LGPL and BSD licensed parts, each file says which).
+Forks are welcome. The same licenses apply to any fork, which means keeping the source available and the
+copyright notices intact.
+
+Thanks to TTimo and the GtkRadiant contributors, and to garux and the
 NetRadiant Custom contributors for the ideas.

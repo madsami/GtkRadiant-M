@@ -26,7 +26,23 @@
 *.vcxproj.user
 *.zip
 
+# more Visual Studio / MSVC build output
+*.ilk
+*.exp
+*.idb
+*.pch
+*.ipch
+*.suo
+*.user
+.vs/
 
+# editor / OS / tool leftovers
+.idea/
+.claude/
+Thumbs.db
+*.orig
+*.rej
+*.bak
 
-
-
+# local, untracked third-party source (bot area compiler), not part of this project
+/bspc/

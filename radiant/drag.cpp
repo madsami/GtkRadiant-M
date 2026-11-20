@@ -324,6 +324,14 @@ void Drag_Begin( int x, int y, int buttons,
 
 	altdown = Sys_AltDown();
 
+	// alt-LBUTTON on a seam between two patches picks it for beveling (ctrl-alt adds to the picked
+	// ones); anywhere else the click does what it always did
+	if ( altdown && ( buttons == MK_LBUTTON || buttons == ( MK_LBUTTON | MK_CONTROL ) ) ) {
+		if ( BevelEdge_Pick( origin, dir, ( buttons & MK_CONTROL ) != 0, sf_camera ) ) {
+			return;
+		}
+	}
+
 	// shift-LBUTTON = select entire brush
 	// shift-alt-LBUTTON = drill select
 	if ( buttons == ( MK_LBUTTON | MK_SHIFT ) && g_qeglobals.d_select_mode != sel_curvepoint && g_qeglobals.d_select_mode != sel_vertex ) {

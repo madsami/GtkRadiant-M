@@ -3653,6 +3653,28 @@ static bool Patch_DrawSegMesh( patchMesh_t *pm ){
 	return true;
 }
 
+// the sampled grid a segmented patch is drawn from (used to follow its real outline)
+bool Patch_SegGridSize( patchMesh_t *p, int *U, int *V ){
+	if ( p->segH <= 0 ) {
+		return false;
+	}
+	segCache_t *c = Seg_GetCache( p );
+	if ( !c ) {
+		return false;
+	}
+	*U = c->grid.U;
+	*V = c->grid.V;
+	return true;
+}
+
+const float* Patch_SegGridXYZ( patchMesh_t *p, int ui, int vi ){
+	segCache_t *c = Seg_GetCache( p );
+	if ( !c || ui < 0 || vi < 0 || ui >= c->grid.U || vi >= c->grid.V ) {
+		return NULL;
+	}
+	return c->grid.p[ui * c->grid.V + vi].xyz;
+}
+
 static bool Patch_SegRay( patchMesh_t *patch, vec3_t origin, vec3_t dir, double *t, double *u, double *v ){
 	segCache_t *c = Seg_GetCache( patch );
 	if ( !c ) {

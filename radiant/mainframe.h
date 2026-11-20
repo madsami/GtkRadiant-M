@@ -186,6 +186,7 @@ struct SKeyInfo
 #define ID_CURVE_ROUNDCYLINDER          40338
 #define ID_CURVE_ROUNDDISPLAY           40339
 #define ID_CURVE_SEGTHICKEN             40340
+#define ID_CURVE_BEVELEDGE              40341
 #define ID_CURVE_PATCHDENSETUBE         32955
 #define ID_CURVE_PATCHVERYDENSETUBE     32956
 #define ID_CURVE_CAP                    32957
@@ -829,6 +830,7 @@ void OnCurvePatchhintedtube();
 void OnCurveSegcylinder();
 void OnCurveSegtoggle();
 void OnCurveSegthicken();
+void OnCurveBeveledge();
 void OnPatchWeld();
 void OnCurvePatchbevel();
 void OnCurvePatchendcap();

@@ -2963,6 +2963,7 @@ void XYWnd::XY_Draw(){
 		end2 = Sys_DoubleTime();
 	}
 
+	BevelEdge_Draw();
 	DrawPathLines();
 
 	//

@@ -640,6 +640,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_ROUNDCYLINDER: g_pParentWnd->OnCurveSegcylinder(); break;
 		  case ID_CURVE_ROUNDDISPLAY: g_pParentWnd->OnCurveSegtoggle(); break;
 		  case ID_CURVE_SEGTHICKEN: g_pParentWnd->OnCurveSegthicken(); break;
+		  case ID_CURVE_BEVELEDGE: g_pParentWnd->OnCurveBeveledge(); break;
 		  case ID_CURVE_PATCHDENSETUBE: g_pParentWnd->OnCurvePatchdensetube(); break;
 		  case ID_CURVE_PATCHVERYDENSETUBE: g_pParentWnd->OnCurvePatchverydensetube(); break;
 		  case ID_CURVE_PATCHSQUARE: g_pParentWnd->OnCurvePatchsquare(); break;
@@ -1625,6 +1626,7 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Segmented Cylinder" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDCYLINDER );
 		create_menu_item_with_mnemonic( menu, _( "Make Segmented / Ordinary" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDDISPLAY );
 		create_menu_item_with_mnemonic( menu, _( "Thicken Segmented..." ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGTHICKEN );
+		create_menu_item_with_mnemonic( menu, _( "Bevel Edge..." ), G_CALLBACK( HandleCommand ), ID_CURVE_BEVELEDGE );
 		menu_separator( menu );
 		create_menu_item_with_mnemonic( menu, _( "End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHENDCAP );
 		create_menu_item_with_mnemonic( menu, _( "Improved End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDENDCAP );
@@ -6790,6 +6792,14 @@ void MainFrame::OnCurveSegthicken(){
 	DoSegThickenDlg();
 	Undo_EndBrushList( &selected_brushes );
 	Undo_End();
+}
+
+void MainFrame::OnCurveBeveledge(){
+	if ( BevelEdge_Count() == 0 ) {
+		Sys_Printf( "Bevel Edge: Alt+click a patch edge first (Ctrl+Alt+click adds more).\n" );
+		return;
+	}
+	BevelPanel_Apply();
 }
 
 void MainFrame::OnCurveSegtoggle(){

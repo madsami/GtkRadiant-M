@@ -438,6 +438,8 @@ extern void PerformFiltering();
 void Select_Deselect( bool bDeselectFaces ){
 	brush_t *b;
 
+	BevelEdge_Clear();
+
 	Patch_Deselect();
 
 	g_pParentWnd->ActiveXY()->UndoClear();

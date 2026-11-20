@@ -101,6 +101,9 @@
     <ClCompile Include="pluginmanager.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="bevel.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="pmesh.cpp">
       <Filter>src</Filter>
     </ClCompile>

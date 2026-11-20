@@ -1017,6 +1017,265 @@ static gboolean SegPanelTick( gpointer data ){
 	return TRUE;
 }
 
+
+// =============================================================================
+// Floating window for the bevel: shows up by itself while a patch edge is picked (Alt+click). The
+// subdivisions are a slider, the width has presets that are portions of the most the edge allows.
+
+static GtkWidget *g_bevelPanel = NULL;
+static GtkWidget *g_bevelSubdiv = NULL;
+static GtkWidget *g_bevelWidth = NULL;
+static GtkWidget *g_bevelInfo = NULL;
+static GtkWidget *g_bevelButton = NULL;
+static bool g_bevelListen = false;
+static float g_bevelFraction = 0.5f;    // 0 = the width was typed in, otherwise a portion of the maximum
+static float g_bevelLastMax = -1.0f;
+static float g_bevelMax = 0;            // the most the picked edge, or the bevel being edited, allows
+static int g_bevelMode = 0;             // 0 hidden, 1 edges are picked (new bevel), 2 an existing bevel is selected
+static brush_t *g_bevelEditStrip = NULL;
+static int g_bevelX = -1, g_bevelY = -1;
+
+void BevelPanel_Apply(){
+	if ( g_bevelPanel == NULL || BevelEdge_Count() == 0 ) {
+		Sys_Printf( "Bevel Edge: Alt+click a patch edge first (Ctrl+Alt+click adds more), or select a bevel to edit it.\n" );
+		return;
+	}
+	const float width = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_bevelWidth ) );
+	const int n = (int)gtk_range_get_value( GTK_RANGE( g_bevelSubdiv ) );
+	Undo_Start( "bevel edge" );
+	const int done = BevelEdges_Apply( width, n );
+	Undo_End();
+	Sys_Printf( "Bevel Edge: %d edge(s) beveled.\n", done );
+	Sys_UpdateWindows( W_ALL );
+}
+
+// editing an existing bevel: every change is applied at once
+static void BevelPanelLive(){
+	if ( g_bevelMode != 2 || !g_bevelListen ) {
+		return;
+	}
+	const float width = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_bevelWidth ) );
+	const int n = (int)gtk_range_get_value( GTK_RANGE( g_bevelSubdiv ) );
+	BevelRec_Edit( width, n );
+}
+
+static void OnBevelApply( GtkWidget *widget, gpointer data ){
+	BevelPanel_Apply();
+}
+
+static void OnBevelPreset( GtkWidget *widget, gpointer data ){
+	const float f = *(const float*)data;
+	if ( g_bevelMax <= 0 ) {
+		return;
+	}
+	g_bevelFraction = f;
+	g_bevelListen = false;
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_bevelWidth ), g_bevelMax * f );
+	g_bevelListen = true;
+	BevelPanelLive();
+}
+
+static void OnBevelWidthChanged( GtkWidget *widget, gpointer data ){
+	if ( g_bevelListen ) {
+		g_bevelFraction = 0; // typed in: stop following the maximum
+		BevelPanelLive();
+	}
+}
+
+static void OnBevelSubdivChanged( GtkWidget *widget, gpointer data ){
+	BevelPanelLive();
+}
+
+static gboolean OnBevelEnter( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	gtk_window_set_accept_focus( GTK_WINDOW( g_bevelPanel ), TRUE );
+	return FALSE;
+}
+
+static gboolean OnBevelLeave( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	if ( event->detail == GDK_NOTIFY_INFERIOR ) {
+		return FALSE;
+	}
+	if ( gtk_window_is_active( GTK_WINDOW( g_bevelPanel ) ) ) {
+		gtk_window_present( GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	}
+	gtk_window_set_accept_focus( GTK_WINDOW( g_bevelPanel ), FALSE );
+	return FALSE;
+}
+
+static const float g_bevelPresets[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+
+static void BevelPanelBuild(){
+	GtkWidget *vbox, *hbox, *label, *button;
+	static const char *names[4] = { "1/4", "1/2", "3/4", "Max" };
+
+	g_bevelListen = true;
+	g_bevelPanel = gtk_window_new( GTK_WINDOW_TOPLEVEL );
+	gtk_window_set_title( GTK_WINDOW( g_bevelPanel ), _( "Bevel Edge" ) );
+	gtk_window_set_transient_for( GTK_WINDOW( g_bevelPanel ), GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	gtk_window_set_type_hint( GTK_WINDOW( g_bevelPanel ), GDK_WINDOW_TYPE_HINT_UTILITY );
+	gtk_window_set_skip_taskbar_hint( GTK_WINDOW( g_bevelPanel ), TRUE );
+	gtk_window_set_focus_on_map( GTK_WINDOW( g_bevelPanel ), FALSE );
+	gtk_window_set_accept_focus( GTK_WINDOW( g_bevelPanel ), FALSE );
+	gtk_window_set_resizable( GTK_WINDOW( g_bevelPanel ), FALSE );
+	gtk_window_set_deletable( GTK_WINDOW( g_bevelPanel ), FALSE );
+
+	vbox = gtk_vbox_new( FALSE, 6 );
+	gtk_container_set_border_width( GTK_CONTAINER( vbox ), 6 );
+	gtk_container_add( GTK_CONTAINER( g_bevelPanel ), vbox );
+	gtk_widget_show( vbox );
+
+	hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox );
+	label = gtk_label_new( _( "Subdivisions" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+	g_bevelSubdiv = gtk_hscale_new_with_range( 1, SEGPATCH_MAX_SEGS, 1 );
+	gtk_scale_set_digits( GTK_SCALE( g_bevelSubdiv ), 0 );
+	gtk_scale_set_value_pos( GTK_SCALE( g_bevelSubdiv ), GTK_POS_RIGHT );
+	gtk_range_set_value( GTK_RANGE( g_bevelSubdiv ), 4 );
+	gtk_widget_set_size_request( g_bevelSubdiv, 220, -1 );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_bevelSubdiv, TRUE, TRUE, 0 );
+	gtk_widget_show( g_bevelSubdiv );
+
+	hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox );
+	label = gtk_label_new( _( "Width" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+	g_bevelWidth = gtk_spin_button_new( GTK_ADJUSTMENT( gtk_adjustment_new( 8, 0.25, 4096, 0.25, 4, 0 ) ), 0.25, 2 );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( g_bevelWidth ), TRUE );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_bevelWidth, FALSE, FALSE, 0 );
+	gtk_widget_show( g_bevelWidth );
+	for ( int i = 0; i < 4; i++ )
+	{
+		button = gtk_button_new_with_label( names[i] );
+		g_signal_connect( G_OBJECT( button ), "clicked", G_CALLBACK( OnBevelPreset ), (gpointer)&g_bevelPresets[i] );
+		gtk_box_pack_start( GTK_BOX( hbox ), button, FALSE, FALSE, 0 );
+		gtk_widget_show( button );
+	}
+
+	hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox );
+	g_bevelInfo = gtk_label_new( "" );
+	gtk_misc_set_alignment( GTK_MISC( g_bevelInfo ), 0.0, 0.5 );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_bevelInfo, TRUE, TRUE, 0 );
+	gtk_widget_show( g_bevelInfo );
+	g_bevelButton = gtk_button_new_with_label( _( "Bevel" ) );
+	g_signal_connect( G_OBJECT( g_bevelButton ), "clicked", G_CALLBACK( OnBevelApply ), NULL );
+	gtk_box_pack_end( GTK_BOX( hbox ), g_bevelButton, FALSE, FALSE, 0 );
+	gtk_widget_show( g_bevelButton );
+
+	gtk_widget_add_events( g_bevelPanel, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK );
+	g_signal_connect( G_OBJECT( g_bevelPanel ), "enter-notify-event", G_CALLBACK( OnBevelEnter ), NULL );
+	g_signal_connect( G_OBJECT( g_bevelPanel ), "leave-notify-event", G_CALLBACK( OnBevelLeave ), NULL );
+	g_signal_connect( G_OBJECT( g_bevelWidth ), "value-changed", G_CALLBACK( OnBevelWidthChanged ), NULL );
+	g_signal_connect( G_OBJECT( g_bevelSubdiv ), "value-changed", G_CALLBACK( OnBevelSubdivChanged ), NULL );
+}
+
+static gboolean BevelPanelTick( gpointer data ){
+	if ( g_pParentWnd == NULL || g_pParentWnd->m_pWidget == NULL ) {
+		return TRUE;
+	}
+	// what the panel is for right now: picked edges (a new bevel) or a selected bevel (edit it)
+	int mode = 0, editN = 0;
+	float maxW = 0, editW = 0;
+	brush_t *strip = NULL;
+	const int count = BevelEdge_Count();
+	if ( count > 0 ) {
+		mode = 1;
+		maxW = BevelEdge_MaxWidth();
+	}
+	else
+	{
+		strip = BevelRec_Selected( &editW, &maxW, &editN );
+		if ( strip ) {
+			mode = 2;
+		}
+	}
+	g_bevelMax = maxW;
+
+	if ( mode && g_bevelPanel == NULL ) {
+		BevelPanelBuild();
+	}
+	if ( g_bevelPanel == NULL ) {
+		return TRUE;
+	}
+
+	if ( mode ) {
+		if ( mode != g_bevelMode || ( mode == 2 && strip != g_bevelEditStrip ) || ( mode == 1 && maxW != g_bevelLastMax ) ) {
+			g_bevelListen = false;
+			const float lo = maxW < 0.25f ? maxW : 0.25f;
+			gtk_spin_button_set_range( GTK_SPIN_BUTTON( g_bevelWidth ), lo, maxW > lo ? maxW : lo );
+			char text[128];
+			if ( mode == 2 ) {
+				gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_bevelWidth ), editW );
+				gtk_range_set_value( GTK_RANGE( g_bevelSubdiv ), editN );
+				g_bevelFraction = 0;
+				sprintf( text, "Editing this bevel (up to %.2f wide)", maxW );
+			}
+			else
+			{
+				if ( g_bevelFraction > 0 && maxW > 0 ) {
+					gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_bevelWidth ), maxW * g_bevelFraction );
+				}
+				if ( maxW > 0 ) {
+					sprintf( text, "%d edge(s), up to %.2f wide", count, maxW );
+				}
+				else
+				{
+					sprintf( text, "%d edge(s): nothing on the other side to bevel towards", count );
+				}
+			}
+			gtk_label_set_text( GTK_LABEL( g_bevelInfo ), text );
+			gtk_widget_set_visible( g_bevelButton, mode == 1 );
+			gtk_widget_set_sensitive( g_bevelButton, maxW > 0 );
+			g_bevelListen = true;
+			g_bevelMode = mode;
+			g_bevelEditStrip = strip;
+			g_bevelLastMax = maxW;
+		}
+		if ( !gtk_widget_get_visible( g_bevelPanel ) ) {
+			if ( g_bevelX < 0 ) {
+				GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
+				GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
+				if ( gw ) {
+					gint ox = 0, oy = 0;
+					GtkAllocation a;
+					gdk_window_get_origin( gw, &ox, &oy );
+					gtk_widget_get_allocation( grid, &a );
+					g_bevelX = ox + a.width - 380;
+					g_bevelY = oy + 100;
+				}
+				else
+				{
+					gint mx = 0, my = 0, mw = 0, mh = 0;
+					gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
+					gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
+					g_bevelX = mx + mw - 400;
+					g_bevelY = my + 180;
+				}
+			}
+			gtk_window_move( GTK_WINDOW( g_bevelPanel ), g_bevelX, g_bevelY );
+			gtk_widget_show( g_bevelPanel );
+		}
+	}
+	else
+	{
+		g_bevelMode = 0;
+		g_bevelEditStrip = NULL;
+		g_bevelLastMax = -1.0f;
+		if ( gtk_widget_get_visible( g_bevelPanel ) ) {
+			gtk_window_get_position( GTK_WINDOW( g_bevelPanel ), &g_bevelX, &g_bevelY );
+			gtk_widget_hide( g_bevelPanel );
+		}
+	}
+	return TRUE;
+}
+
 void SegPanel_Init(){
 	g_timeout_add( 150, SegPanelTick, NULL );
+	g_timeout_add( 150, BevelPanelTick, NULL );
 }

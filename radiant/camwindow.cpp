@@ -1714,6 +1714,7 @@ void CamWnd::Cam_Draw(){
 	// draw pointfile
 	//
 	qglEnable( GL_DEPTH_TEST );
+	BevelEdge_Draw();
 	DrawPathLines();
 
 	if ( g_qeglobals.d_pointfile_display_list ) {

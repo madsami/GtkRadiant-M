@@ -181,6 +181,7 @@
     <ClCompile Include="mainframe.cpp" />
     <ClCompile Include="map.cpp" />
     <ClCompile Include="missing.cpp" />
+    <ClCompile Include="bevel.cpp" />
     <ClCompile Include="parse.cpp" />
     <ClCompile Include="patchdialog.cpp" />
     <ClCompile Include="pluginentities.cpp" />

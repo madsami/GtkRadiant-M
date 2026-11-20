@@ -858,64 +858,164 @@ int mainRadiant( int argc, char* argv[] ) {
 #pragma pop_macro( "DeleteKey" )
 #include <strsafe.h> //StringCchPrintf
 
+#include <tlhelp32.h>
+#include <signal.h>
+
+// Crash reporting. Every crash writes two files to %TEMP%\GTKRadiant: a minidump (.dmp) and a
+// readable report (.txt) with the exception, the module it happened in and the list of loaded
+// modules, which shows overlay / capture hooks injected by other programs (Discord, OBS, ...).
+// The process-wide filter catches crashes on any thread, not only the main one, and abort() and
+// invalid CRT parameter calls, which leave no exception, are reported too.
+static void Crash_Printf( HANDLE h, const char *fmt, ... ){
+	char buf[1024];
+	va_list va;
+	DWORD n;
+	va_start( va, fmt );
+	if ( SUCCEEDED( StringCchVPrintfA( buf, sizeof( buf ), fmt, va ) ) ) {
+		WriteFile( h, buf, (DWORD)strlen( buf ), &n, NULL );
+	}
+	va_end( va );
+}
+
+static void Crash_Report( EXCEPTION_POINTERS* ep, const char *what ){
+	static LONG busy = 0;
+	if ( InterlockedExchange( &busy, 1 ) ) {
+		return; // crashed again while reporting
+	}
+
+	char szPath[MAX_PATH];
+	char szDir[MAX_PATH];
+	char szBase[MAX_PATH];
+	char szFile[MAX_PATH];
+	SYSTEMTIME st;
+
+	GetLocalTime( &st );
+	GetTempPathA( MAX_PATH, szPath );
+	StringCchPrintfA( szDir, MAX_PATH, "%sGTKRadiant", szPath );
+	CreateDirectoryA( szDir, NULL );
+	StringCchPrintfA( szBase, MAX_PATH, "%s\\GTKRadiant-%s-%04d%02d%02d-%02d%02d%02d", szDir, RADIANT_VERSION,
+					  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond );
+
+	// readable report first: it is small and simple, the dump can fail
+	StringCchPrintfA( szFile, MAX_PATH, "%s.txt", szBase );
+	HANDLE hLog = CreateFileA( szFile, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS, 0, 0 );
+	if ( hLog != INVALID_HANDLE_VALUE ) {
+		Crash_Printf( hLog, "GtkRadiant %s crash report, %04d-%02d-%02d %02d:%02d:%02d\r\n", RADIANT_VERSION,
+					  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond );
+		Crash_Printf( hLog, "what: %s\r\nthread: %lu\r\n", what, GetCurrentThreadId() );
+		if ( ep && ep->ExceptionRecord ) {
+			const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+			char szMod[MAX_PATH] = "?";
+			HMODULE hMod = NULL;
+			if ( GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+									 (LPCSTR)er->ExceptionAddress, &hMod ) ) {
+				GetModuleFileNameA( hMod, szMod, MAX_PATH );
+			}
+			Crash_Printf( hLog, "exception: 0x%08lX at %p\r\n", er->ExceptionCode, er->ExceptionAddress );
+			Crash_Printf( hLog, "in module: %s (+0x%lX)\r\n", szMod,
+						  (unsigned long)( (BYTE*)er->ExceptionAddress - (BYTE*)hMod ) );
+			if ( er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2 ) {
+				Crash_Printf( hLog, "access violation: %s address 0x%p\r\n",
+							  er->ExceptionInformation[0] == 0 ? "reading" : ( er->ExceptionInformation[0] == 1 ? "writing" : "executing" ),
+							  (void*)er->ExceptionInformation[1] );
+			}
+#if defined( _M_IX86 )
+			if ( ep->ContextRecord ) {
+				const CONTEXT *c = ep->ContextRecord;
+				Crash_Printf( hLog, "eip=%08lX esp=%08lX ebp=%08lX eax=%08lX ebx=%08lX ecx=%08lX edx=%08lX esi=%08lX edi=%08lX\r\n",
+							  c->Eip, c->Esp, c->Ebp, c->Eax, c->Ebx, c->Ecx, c->Edx, c->Esi, c->Edi );
+			}
+#endif
+		}
+		Crash_Printf( hLog, "\r\nloaded modules:\r\n" );
+		HANDLE snap = CreateToolhelp32Snapshot( TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId() );
+		if ( snap != INVALID_HANDLE_VALUE ) {
+			MODULEENTRY32 me;
+			me.dwSize = sizeof( me );
+			for ( BOOL ok = Module32First( snap, &me ); ok; ok = Module32Next( snap, &me ) )
+				Crash_Printf( hLog, "%p  %8lX  %s\r\n", me.modBaseAddr, me.modBaseSize, me.szExePath );
+			CloseHandle( snap );
+		}
+		CloseHandle( hLog );
+	}
+
+	StringCchPrintfA( szFile, MAX_PATH, "%s.dmp", szBase );
+	HANDLE hDump = CreateFileA( szFile, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE | FILE_SHARE_READ, 0, CREATE_ALWAYS, 0, 0 );
+	if ( hDump != INVALID_HANDLE_VALUE ) {
+		MINIDUMP_EXCEPTION_INFORMATION ExpParam;
+		ExpParam.ThreadId = GetCurrentThreadId();
+		ExpParam.ExceptionPointers = ep;
+		ExpParam.ClientPointers = TRUE;
+		MiniDumpWriteDump( GetCurrentProcess(), GetCurrentProcessId(), hDump,
+						   (MINIDUMP_TYPE)( MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules ),
+						   ep ? &ExpParam : NULL, NULL, NULL );
+		CloseHandle( hDump );
+	}
+
+	char szText[2 * MAX_PATH];
+	StringCchPrintfA( szText, sizeof( szText ), "Application crashed!\nA crash report and dump file were written to:\n%s.*", szBase );
+	if ( !getenv( "RADIANT_CRASHTEST" ) ) {
+		MessageBoxA( NULL, szText, NULL, MB_ICONERROR );
+	}
+}
+
+// exception on the main thread, called from the __except in main()
 int GenerateDump( EXCEPTION_POINTERS* pExceptionPointers ) {
-	BOOL bMiniDumpSuccessful;
-    char szPath[MAX_PATH]; 
-    char szFileName[MAX_PATH]; 
-    char szAppName[] = "GTKRadiant";
-    char* szVersion = RADIANT_VERSION;
-    DWORD dwBufferSize = MAX_PATH;
-    HANDLE hDumpFile;
-    SYSTEMTIME stLocalTime;
-    MINIDUMP_EXCEPTION_INFORMATION ExpParam;
+	Crash_Report( pExceptionPointers, "unhandled exception on the main thread" );
+	return EXCEPTION_EXECUTE_HANDLER;
+}
 
-    GetLocalTime( &stLocalTime );
-    GetTempPath( dwBufferSize, szPath );
+// exception on any other thread (GTK helper threads, threads started by injected overlay code)
+static LONG WINAPI Crash_Filter( EXCEPTION_POINTERS* ep ) {
+	Crash_Report( ep, "unhandled exception on another thread" );
+	return EXCEPTION_EXECUTE_HANDLER;
+}
 
-    StringCchPrintf( szFileName, MAX_PATH, "%s%s", szPath, szAppName );
-    CreateDirectory( szFileName, NULL );
+static void Crash_Abort( int ) {
+	Crash_Report( NULL, "abort() was called (for example by a fatal GLib / GTK error)" );
+	TerminateProcess( GetCurrentProcess(), 3 );
+}
 
-    StringCchPrintf( szFileName, MAX_PATH, "%s%s\\%s-%s-%04d%02d%02d-%02d%02d%02d.dmp", 
-               szPath, szAppName, szAppName, szVersion, 
-               stLocalTime.wYear, stLocalTime.wMonth, stLocalTime.wDay, 
-               stLocalTime.wHour, stLocalTime.wMinute, stLocalTime.wSecond );
-    hDumpFile = CreateFile(szFileName, GENERIC_READ|GENERIC_WRITE, 
-                FILE_SHARE_WRITE|FILE_SHARE_READ, 0, CREATE_ALWAYS, 0, 0);
+// RADIANT_CRASHTEST=main|thread|abort makes Radiant crash on purpose at startup, to check the reporting
+static DWORD WINAPI Crash_TestThread( LPVOID ) {
+	*(volatile int*)0 = 1;
+	return 0;
+}
 
-    ExpParam.ThreadId = GetCurrentThreadId();
-    ExpParam.ExceptionPointers = pExceptionPointers;
-    ExpParam.ClientPointers = TRUE;
+static void Crash_Test() {
+	const char *t = getenv( "RADIANT_CRASHTEST" );
+	if ( !t ) {
+		return;
+	}
+	if ( !strcmp( t, "main" ) ) {
+		*(volatile int*)0 = 1;
+	}
+	else if ( !strcmp( t, "thread" ) ) {
+		WaitForSingleObject( CreateThread( NULL, 0, Crash_TestThread, NULL, 0, NULL ), INFINITE );
+	}
+	else if ( !strcmp( t, "abort" ) ) {
+		abort();
+	}
+}
 
-    bMiniDumpSuccessful = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), 
-                    hDumpFile, MiniDumpWithDataSegs, &ExpParam, NULL, NULL);
-
-    return EXCEPTION_EXECUTE_HANDLER;
+static void Crash_InvalidParam( const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t ) {
+	Crash_Report( NULL, "invalid parameter passed to a C runtime function" );
+	TerminateProcess( GetCurrentProcess(), 3 );
 }
 #endif
 
 int main( int argc, char* argv[] ) {
 
 #if defined( _WIN32 ) && defined( _MSC_VER ) && !defined( _DEBUG )
+	SetUnhandledExceptionFilter( Crash_Filter );
+	signal( SIGABRT, Crash_Abort );
+	_set_invalid_parameter_handler( Crash_InvalidParam );
 	__try {
+		Crash_Test();
 		return mainRadiant( argc, argv );
 	} __except( GenerateDump( GetExceptionInformation() ) ) {
-
-		char szPath[MAX_PATH]; 
-		char szText[MAX_PATH]; 
-		char szFileName[MAX_PATH]; 
-		char szAppName[] = "GTKRadiant";
-		SYSTEMTIME stLocalTime;
-		DWORD dwBufferSize = MAX_PATH;
-
-	    GetLocalTime( &stLocalTime );
-	    GetTempPath( dwBufferSize, szPath );
-
-	    StringCchPrintf( szFileName, MAX_PATH, "%s%s", szPath, szAppName );
-
-		StringCchPrintf( szText, MAX_PATH, _("Application crashed!\nCreated a dump file in: \n%s"), szFileName );
-
-		MessageBox( NULL, szText, NULL, MB_ICONERROR );
 	}
+	return 1;
 #else
 	return mainRadiant( argc, argv );
 #endif

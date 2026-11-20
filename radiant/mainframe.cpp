@@ -2082,6 +2082,13 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 		g_object_set_data( G_OBJECT( window ), "tb_show_entities", w );
 	}
 
+	// section for the patch tools added in this build, behind a vertical divider
+	toolbar_append_space( GTK_TOOLBAR( toolbar ) );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Bevel Edge..." ), "",
+								 new_image_icon("bevel_edge.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_BEVELEDGE ) );
+	g_object_set_data( G_OBJECT( window ), "tb_bevel_edge", w );
+
 	/*
 	   uh? that is OLD
 	   #ifndef QUAKE3

@@ -2084,6 +2084,14 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 
 	// section for the patch tools added in this build, behind a vertical divider
 	toolbar_append_space( GTK_TOOLBAR( toolbar ) );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Segmented Cylinder" ), "",
+								 new_image_icon("seg_cylinder.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_ROUNDCYLINDER ) );
+	g_object_set_data( G_OBJECT( window ), "tb_seg_cylinder", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Make Segmented / Ordinary" ), "",
+								 new_image_icon("seg_toggle.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_ROUNDDISPLAY ) );
+	g_object_set_data( G_OBJECT( window ), "tb_seg_toggle", w );
 	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Thicken Segmented..." ), "",
 								 new_image_icon("seg_thicken.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_SEGTHICKEN ) );

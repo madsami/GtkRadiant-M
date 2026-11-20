@@ -27,6 +27,7 @@
 
 #include <gdk/gdkkeysyms.h>
 #include "stdafx.h"
+#include "segpatch.h"
 #include "patchdialog.h"
 #include <glib/gi18n.h>
 
@@ -38,6 +39,28 @@ texdef_t *l_pPIIncrement = &g_qeglobals.d_savedinfo.m_PIIncrement;
 
 // =============================================================================
 // static functions
+
+// segment counts: applied to every selected patch as soon as they change
+static void SegApply(){
+	if ( !g_PatchDialog.m_bSegListen ) {
+		return;
+	}
+	bool on = gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_PatchDialog.m_pSegCheck ) ) != FALSE;
+	int h = gtk_spin_button_get_value_as_int( GTK_SPIN_BUTTON( g_PatchDialog.m_pSegHSpin ) );
+	int v = gtk_spin_button_get_value_as_int( GTK_SPIN_BUTTON( g_PatchDialog.m_pSegVSpin ) );
+	gtk_widget_set_sensitive( g_PatchDialog.m_pSegHSpin, on );
+	gtk_widget_set_sensitive( g_PatchDialog.m_pSegVSpin, on );
+	Undo_Start( "set patch segments" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_SetSegmentsSelected( on ? h : 0, v );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+	Sys_UpdateWindows( W_ALL );
+}
+
+static void OnSegChanged( GtkWidget *widget, gpointer data ){
+	SegApply();
+}
 
 static void OnDone( GtkWidget *widget, gpointer data ){
 	g_PatchDialog.m_Patch = NULL;
@@ -263,6 +286,8 @@ PatchDialog::PatchDialog (){
 	m_fZ = 0.0f;
 	m_nCol = 0;
 	m_nRow = 0;
+	m_pSegCheck = m_pSegHSpin = m_pSegVSpin = NULL;
+	m_bSegListen = false;
 	m_Patch = NULL;
 	m_bListenChanged = true;
 }
@@ -691,6 +716,47 @@ void PatchDialog::BuildDialog(){
 	gtk_size_group_add_widget( size_group, fit_button );
 	g_object_unref( size_group );
 
+	// segment counts of segmented patches
+	frame = gtk_frame_new( _( "Segments (segmented patches)" ) );
+	gtk_box_pack_start( GTK_BOX( vbox ), frame, TRUE, FALSE, 0 );
+	gtk_widget_show( frame );
+
+	hbox2 = gtk_hbox_new( FALSE, 5 );
+	gtk_container_add( GTK_CONTAINER( frame ), hbox2 );
+	gtk_container_set_border_width( GTK_CONTAINER( hbox2 ), 5 );
+	gtk_widget_show( hbox2 );
+
+	m_pSegCheck = gtk_check_button_new_with_label( _( "Segmented" ) );
+	gtk_box_pack_start( GTK_BOX( hbox2 ), m_pSegCheck, FALSE, FALSE, 0 );
+	gtk_widget_show( m_pSegCheck );
+	g_signal_connect( G_OBJECT( m_pSegCheck ), "toggled", G_CALLBACK( OnSegChanged ), NULL );
+
+	label = gtk_label_new( _( "Horizontal:" ) );
+	gtk_box_pack_start( GTK_BOX( hbox2 ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+
+	adj = GTK_ADJUSTMENT( gtk_adjustment_new( SEGPATCH_DEFAULT_H, SEGPATCH_MIN_H, SEGPATCH_MAX_SEGS, 1, 4, 0 ) );
+	m_pSegHSpin = gtk_spin_button_new( adj, 1, 0 );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( m_pSegHSpin ), TRUE );
+	gtk_box_pack_start( GTK_BOX( hbox2 ), m_pSegHSpin, FALSE, FALSE, 0 );
+	gtk_widget_show( m_pSegHSpin );
+	g_signal_connect( G_OBJECT( m_pSegHSpin ), "value-changed", G_CALLBACK( OnSegChanged ), NULL );
+
+	label = gtk_label_new( _( "Vertical:" ) );
+	gtk_box_pack_start( GTK_BOX( hbox2 ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+
+	adj = GTK_ADJUSTMENT( gtk_adjustment_new( SEGPATCH_DEFAULT_V, SEGPATCH_MIN_V, SEGPATCH_MAX_SEGS, 1, 4, 0 ) );
+	m_pSegVSpin = gtk_spin_button_new( adj, 1, 0 );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( m_pSegVSpin ), TRUE );
+	gtk_box_pack_start( GTK_BOX( hbox2 ), m_pSegVSpin, FALSE, FALSE, 0 );
+	gtk_widget_show( m_pSegVSpin );
+	g_signal_connect( G_OBJECT( m_pSegVSpin ), "value-changed", G_CALLBACK( OnSegChanged ), NULL );
+
+	m_bSegListen = true;
+	gtk_widget_set_sensitive( m_pSegHSpin, FALSE );
+	gtk_widget_set_sensitive( m_pSegVSpin, FALSE );
+
 	hbox = gtk_hbox_new( FALSE, 5 );
 	gtk_box_pack_start( GTK_BOX( vbox ), hbox, TRUE, FALSE, 0 );
 	gtk_widget_show( hbox );
@@ -717,8 +783,29 @@ void PatchDialog::UpdateData( bool retrieve ){
 	m_bListenChanged = true;
 }
 
+// show the segment counts of the selected patch(es)
+void PatchDialog::UpdateSegInfo(){
+	if ( m_pSegCheck == NULL ) {
+		return;
+	}
+	int h = 0, v = 0;
+	bool have = Patch_GetSegmentsSelected( &h, &v );
+	m_bSegListen = false;
+	gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( m_pSegCheck ), have && h > 0 );
+	if ( have && h > 0 ) {
+		gtk_spin_button_set_range( GTK_SPIN_BUTTON( m_pSegHSpin ), Patch_SegMinHSelected(), SEGPATCH_MAX_SEGS );
+		gtk_spin_button_set_value( GTK_SPIN_BUTTON( m_pSegHSpin ), h );
+		gtk_spin_button_set_value( GTK_SPIN_BUTTON( m_pSegVSpin ), v );
+	}
+	gtk_widget_set_sensitive( m_pSegCheck, have ? TRUE : FALSE );
+	gtk_widget_set_sensitive( m_pSegHSpin, ( have && h > 0 ) ? TRUE : FALSE );
+	gtk_widget_set_sensitive( m_pSegVSpin, ( have && h > 0 ) ? TRUE : FALSE );
+	m_bSegListen = true;
+}
+
 // read the map and feed in the stuff to the dialog box
 void PatchDialog::GetPatchInfo(){
+	UpdateSegInfo();
 	m_Patch = SinglePatchSelected();
 	if ( m_Patch != NULL ) {
 		gchar buffer[11];
@@ -781,4 +868,155 @@ void PatchDialog::UpdateRowColInfo(){
 			m_fT = m_Patch->ctrl[c][r].st[1];
 		}
 	}
+}
+
+
+// =============================================================================
+// Floating window for the segment counts: shows up by itself while a segmented patch is selected and
+// goes away again when none is. Watching the selection from a timer instead of hooking every place
+// the selection can change keeps it right for all of them.
+
+static GtkWidget *g_segPanel = NULL;
+static GtkWidget *g_segPanelH = NULL;
+static GtkWidget *g_segPanelV = NULL;
+static bool g_segPanelListen = false;
+static int g_segPanelX = -1, g_segPanelY = -1;
+
+static void OnSegPanelChanged( GtkWidget *widget, gpointer data ){
+	if ( !g_segPanelListen ) {
+		return;
+	}
+	int h = gtk_spin_button_get_value_as_int( GTK_SPIN_BUTTON( g_segPanelH ) );
+	int v = gtk_spin_button_get_value_as_int( GTK_SPIN_BUTTON( g_segPanelV ) );
+	Undo_Start( "set patch segments" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_SetSegmentsSelected( h, v );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+	Sys_UpdateWindows( W_ALL );
+	g_PatchDialog.UpdateSegInfo(); // keep the Patch Properties window in step, if it is open
+}
+
+// The panel never takes the keyboard by itself: it only accepts focus while the pointer is over it,
+// and hands the focus back to the main window as soon as the pointer leaves.
+static gboolean OnSegPanelEnter( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	gtk_window_set_accept_focus( GTK_WINDOW( g_segPanel ), TRUE );
+	return FALSE;
+}
+
+static gboolean OnSegPanelLeave( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	if ( event->detail == GDK_NOTIFY_INFERIOR ) {
+		return FALSE; // only moved onto one of the boxes inside the panel
+	}
+	if ( gtk_window_is_active( GTK_WINDOW( g_segPanel ) ) ) {
+		gtk_window_present( GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	}
+	gtk_window_set_accept_focus( GTK_WINDOW( g_segPanel ), FALSE );
+	return FALSE;
+}
+
+static void SegPanelBuild(){	GtkWidget *hbox, *label;
+	GtkAdjustment *adj;
+
+	g_segPanel = gtk_window_new( GTK_WINDOW_TOPLEVEL );
+	gtk_window_set_title( GTK_WINDOW( g_segPanel ), _( "Segments" ) );
+	gtk_window_set_transient_for( GTK_WINDOW( g_segPanel ), GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	gtk_window_set_type_hint( GTK_WINDOW( g_segPanel ), GDK_WINDOW_TYPE_HINT_UTILITY );
+	gtk_window_set_skip_taskbar_hint( GTK_WINDOW( g_segPanel ), TRUE );
+	gtk_window_set_focus_on_map( GTK_WINDOW( g_segPanel ), FALSE ); // appearing must not take the keyboard from the views
+	gtk_window_set_accept_focus( GTK_WINDOW( g_segPanel ), FALSE );
+	gtk_window_set_resizable( GTK_WINDOW( g_segPanel ), FALSE );
+	gtk_window_set_deletable( GTK_WINDOW( g_segPanel ), FALSE );
+
+	hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_container_set_border_width( GTK_CONTAINER( hbox ), 6 );
+	gtk_container_add( GTK_CONTAINER( g_segPanel ), hbox );
+	gtk_widget_show( hbox );
+
+	label = gtk_label_new( _( "Horizontal" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+	adj = GTK_ADJUSTMENT( gtk_adjustment_new( SEGPATCH_DEFAULT_H, SEGPATCH_MIN_H, SEGPATCH_MAX_SEGS, 1, 4, 0 ) );
+	g_segPanelH = gtk_spin_button_new( adj, 1, 0 );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( g_segPanelH ), TRUE );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_segPanelH, FALSE, FALSE, 0 );
+	gtk_widget_show( g_segPanelH );
+
+	label = gtk_label_new( _( "Vertical" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+	adj = GTK_ADJUSTMENT( gtk_adjustment_new( SEGPATCH_DEFAULT_V, SEGPATCH_MIN_V, SEGPATCH_MAX_SEGS, 1, 4, 0 ) );
+	g_segPanelV = gtk_spin_button_new( adj, 1, 0 );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( g_segPanelV ), TRUE );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_segPanelV, FALSE, FALSE, 0 );
+	gtk_widget_show( g_segPanelV );
+
+	gtk_widget_add_events( g_segPanel, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK );
+	g_signal_connect( G_OBJECT( g_segPanel ), "enter-notify-event", G_CALLBACK( OnSegPanelEnter ), NULL );
+	g_signal_connect( G_OBJECT( g_segPanel ), "leave-notify-event", G_CALLBACK( OnSegPanelLeave ), NULL );
+	g_signal_connect( G_OBJECT( g_segPanelH ), "value-changed", G_CALLBACK( OnSegPanelChanged ), NULL );
+	g_signal_connect( G_OBJECT( g_segPanelV ), "value-changed", G_CALLBACK( OnSegPanelChanged ), NULL );
+}
+
+static gboolean SegPanelTick( gpointer data ){
+	if ( g_pParentWnd == NULL || g_pParentWnd->m_pWidget == NULL ) {
+		return TRUE;
+	}
+	int h = 0, v = 0;
+	bool want = Patch_GetSegmentedSelected( &h, &v );
+
+	if ( want && g_segPanel == NULL ) {
+		SegPanelBuild();
+	}
+	if ( g_segPanel == NULL ) {
+		return TRUE;
+	}
+
+	if ( want ) {
+		// show what the selected patch has, unless the player is typing in the box right now
+		g_segPanelListen = false;
+		gtk_spin_button_set_range( GTK_SPIN_BUTTON( g_segPanelH ), Patch_SegMinHSelected(), SEGPATCH_MAX_SEGS );
+		if ( !gtk_widget_has_focus( g_segPanelH ) && gtk_spin_button_get_value_as_int( GTK_SPIN_BUTTON( g_segPanelH ) ) != h ) {
+			gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_segPanelH ), h );
+		}
+		if ( !gtk_widget_has_focus( g_segPanelV ) && gtk_spin_button_get_value_as_int( GTK_SPIN_BUTTON( g_segPanelV ) ) != v ) {
+			gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_segPanelV ), v );
+		}
+		g_segPanelListen = true;
+
+		if ( !gtk_widget_get_visible( g_segPanel ) ) {
+			if ( g_segPanelX < 0 ) {
+				// first time: top right corner of the grid (XY) window
+				GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
+				GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
+				if ( gw ) {
+					gint ox = 0, oy = 0;
+					GtkAllocation a;
+					gdk_window_get_origin( gw, &ox, &oy );
+					gtk_widget_get_allocation( grid, &a );
+					g_segPanelX = ox + a.width - 360;
+					g_segPanelY = oy + 40;
+				}
+				else
+				{
+					gint mx = 0, my = 0, mw = 0, mh = 0;
+					gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
+					gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
+					g_segPanelX = mx + mw - 380;
+					g_segPanelY = my + 120;
+				}
+			}
+			gtk_window_move( GTK_WINDOW( g_segPanel ), g_segPanelX, g_segPanelY );
+			gtk_widget_show( g_segPanel );
+		}
+	}
+	else if ( gtk_widget_get_visible( g_segPanel ) ) {
+		gtk_window_get_position( GTK_WINDOW( g_segPanel ), &g_segPanelX, &g_segPanelY ); // come back where it was left
+		gtk_widget_hide( g_segPanel );
+	}
+	return TRUE;
+}
+
+void SegPanel_Init(){
+	g_timeout_add( 150, SegPanelTick, NULL );
 }

@@ -28,6 +28,7 @@
 //
 
 #include "plugin.h"
+#include "segpatch.h"
 
 // cmdlib
 extern void ExtractFileName( const char *path, char *dest );
@@ -190,7 +191,7 @@ char *SearchWadsForTextureName( const char *cleantexturename ){
 }
 // End of half-life specific stuff
 
-void Patch_Parse( patchMesh_t *pPatch ){
+void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 	int i, j;
 	char *str;
 
@@ -225,6 +226,13 @@ void Patch_Parse( patchMesh_t *pPatch ){
 		abortcode = MAP_ABORTED;
 	}
 
+	if ( bDef3 ) {
+		// segmented patch: the segment counts (see segpatch.h)
+		GetToken( false );
+		pPatch->segH = SegPatch_ClampH( atoi( token ), 1 );
+		GetToken( false );
+		pPatch->segV = SegPatch_ClampV( atoi( token ) );
+	}
 	// ignore contents/flags/value
 	GetToken( false );
 	GetToken( false );
@@ -496,11 +504,11 @@ bool Primitive_Parse( brush_t *pBrush ){
 	char *token = Token();
 
 	GetToken( true );
-	if ( !strcmp( token, "patchDef2" ) ) {
+	if ( !strcmp( token, "patchDef2" ) || !strcmp( token, "patchDef3" ) ) {
 		pBrush->patchBrush = true;
 		pBrush->pPatch = Patch_Alloc();
 		pBrush->pPatch->pSymbiot = pBrush;
-		Patch_Parse( pBrush->pPatch );
+		Patch_Parse( pBrush->pPatch, !strcmp( token, "patchDef3" ) );
 		GetToken( true ); //}
 
 		// A patchdef should never be loaded from a quake2 map file
@@ -594,6 +602,48 @@ void Entity_Parse( entity_t *pEntity ){
 	}
 }
 
+// Segmented patches are stored as a commented cage ( //@seg lines ) followed by the generated pieces
+// ( between "// segpieces begin" and "// segpieces end" ). The compilers read the pieces; here the cage
+// comes back as a patchDef3 and the pieces are dropped, they are generated again when saving.
+static char* Segpatch_Preprocess( const char *buf ){
+	size_t len = strlen( buf );
+	char *out = new char[len + 2];
+	char *o = out;
+	const char *p = buf;
+	bool skipping = false;
+	while ( *p )
+	{
+		const char *nl = strchr( p, '\n' );
+		const char *next = nl ? nl + 1 : p + strlen( p );
+		size_t n = next - p; // the line, with its line end
+
+		if ( skipping ) {
+			if ( !strncmp( p, "// segpieces end", 16 ) ) {
+				skipping = false;
+			}
+		}
+		else if ( !strncmp( p, "// segpieces begin", 18 ) && strstr( next, "// segpieces end" ) ) {
+			skipping = true;
+		}
+		else if ( !strncmp( p, "//@seg", 6 ) ) {
+			const char *rest = p + 6;
+			if ( *rest == ' ' ) {
+				rest++;
+			}
+			memcpy( o, rest, next - rest );
+			o += next - rest;
+		}
+		else
+		{
+			memcpy( o, p, n );
+			o += n;
+		}
+		p = next;
+	}
+	*o = '\0';
+	return out;
+}
+
 void Map_Read( IDataStream *in, CPtrArray *map ){
 	entity_t *pEntity;
 	char *buf;
@@ -602,6 +652,9 @@ void Map_Read( IDataStream *in, CPtrArray *map ){
 	buf = new char[len + 1];
 	in->Read( buf, len );
 	buf[len] = '\0';
+	char *cooked = Segpatch_Preprocess( buf );
+	delete [] buf;
+	buf = cooked;
 	StartTokenParsing( buf );
 	abortcode = MAP_NOERROR;
 

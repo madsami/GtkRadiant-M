@@ -436,6 +436,8 @@ typedef struct {
 	bool colDirty[( ( MAX_PATCH_HEIGHT - 1 ) - 1 ) / 2];
 	bool LODUpdated;
 	void *drawLists; // pointer to std::list
+	// segmented patch (see segpatch.h): 0 = ordinary patch, else the number of segments along the width / height
+	int segH, segV;
 } patchMesh_t;
 
 typedef struct brush_s

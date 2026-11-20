@@ -432,6 +432,11 @@ void Patch_DrawXY( patchMesh_t *p );
 extern bool g_bPatchRoundHint;
 void Patch_RoundSelected();
 void Patch_SetHintFromSelected();
+void Patch_SetSegmentsSelected( int segH, int segV );  // segmented patches (segpatch.h); segH 0 = ordinary patch
+bool Patch_GetSegmentsSelected( int *segH, int *segV );
+void Patch_ToggleSegmentsSelected();
+bool Patch_GetSegmentedSelected( int *segH, int *segV );
+void SegPanel_Init(); // the small floating window for the segment counts
 void Patch_DrawHint( patchMesh_t *p, bool bFill );
 void Patch_InsertColumn( patchMesh_t *p, bool bAdd );
 void Patch_InsertRow( patchMesh_t *p, bool bAdd );
@@ -468,6 +473,9 @@ void patchInvert( patchMesh_t *p );
 void Patch_SetOverlays();
 void Patch_ClearOverlays();
 void Patch_Thicken( int nAmount, bool bSeam, qboolean bGroupResult );
+bool Patch_ThickenSegmented( float depth, bool outward );
+int Patch_SegMinHSelected();
+void DoSegThickenDlg();
 void Patch_Transpose();
 void Patch_Freeze();
 void Patch_UnFreeze( bool bAll );

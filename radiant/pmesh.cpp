@@ -28,7 +28,9 @@
 
 #include "stdafx.h"
 #include <map>
+#include <set>
 #include <vector>
+#include "segpatch.h"
 #include "gtkmisc.h"
 
 #include "gtkr_list.h"
@@ -63,6 +65,7 @@ patchMesh_t* Patch_Alloc(){
 	pPatch->bOverlay = false;
 	pPatch->bDirty = true;
 	pPatch->LODUpdated = false;
+	pPatch->segH = pPatch->segV = 0;
 
 	int i;
 	for ( i = 0; i < ( ( ( MAX_PATCH_WIDTH - 1 ) - 1 ) / 2 ); i++ )
@@ -80,6 +83,7 @@ patchMesh_t* MakeNewPatch(){
 	Patch_InitialiseLODPointers( pm );
 	pm->drawLists = NULL;
 	pm->bDirty = true;
+	pm->segH = pm->segV = 0;
 
 	return pm;
 }
@@ -3451,7 +3455,13 @@ int Triangle_Ray( float orig[3], float dir[3], bool bCullBack,
 	return 1;
 }
 
+static bool Patch_SegRay( patchMesh_t *patch, vec3_t origin, vec3_t dir, double *t, double *u, double *v );
+
 bool Patch_Ray( patchMesh_t *patch, vec3_t origin, vec3_t dir, double *t, double *u, double *v ){
+	if ( patch->segH > 0 ) {
+		// a segmented patch never builds the LOD draw lists below, it is hit on its own grid
+		return Patch_SegRay( patch, origin, dir, t, u, v );
+	}
 	drawLists_t *drawLists;
 
 	drawLists_t::iterator iterLists, iterListsNext;
@@ -3514,7 +3524,260 @@ bool Patch_Ray( patchMesh_t *patch, vec3_t origin, vec3_t dir, double *t, double
    DrawPatchMesh
    =================
  */
+/*
+   ==================
+   Segmented patches (see segpatch.h)
+
+   A patch with segH > 0 is drawn from the grid generated out of its control points instead of from
+   the LOD curve trees. The grid is kept per patch and rebuilt when anything that goes into it
+   changes. The control points, selection and vertex editing are unchanged.
+   ==================
+ */
+struct segCache_t
+{
+	std::vector<float> key;
+	segGrid_t grid;
+	std::vector<segPoint_t> normals; // only xyz is used
+};
+
+static std::map<const patchMesh_t*, segCache_t> g_segCache;
+
+static segCache_t* Seg_GetCache( patchMesh_t *p ){
+	std::vector<float> key;
+	key.reserve( 4 + p->width * p->height * 5 );
+	key.push_back( (float)p->width );
+	key.push_back( (float)p->height );
+	key.push_back( (float)p->segH );
+	key.push_back( (float)p->segV );
+	for ( int i = 0; i < p->width; i++ )
+		for ( int j = 0; j < p->height; j++ )
+		{
+			key.push_back( p->ctrl[i][j].xyz[0] );
+			key.push_back( p->ctrl[i][j].xyz[1] );
+			key.push_back( p->ctrl[i][j].xyz[2] );
+			key.push_back( p->ctrl[i][j].st[0] );
+			key.push_back( p->ctrl[i][j].st[1] );
+		}
+
+	segCache_t &c = g_segCache[p];
+	if ( c.key != key ) {
+		c.key = key;
+		c.grid.U = c.grid.V = 0;
+		c.grid.p.clear();
+		c.normals.clear();
+		if ( !SegPatch_BuildGrid( p, p->segH, p->segV, c.grid ) ) {
+			c.grid.U = c.grid.V = 0;
+			return NULL;
+		}
+
+		const int U = c.grid.U, V = c.grid.V;
+		const std::vector<segPoint_t> &G = c.grid.p;
+		int ui, vi;
+
+		// closed in either direction: smooth the normals across the seam
+		bool wrapU = true, wrapV = true;
+		for ( vi = 0; vi < V && wrapU; vi++ )
+		{
+			vec3_t d;
+			VectorSubtract( G[vi].xyz, G[( U - 1 ) * V + vi].xyz, d );
+			if ( VectorLength( d ) > 0.5f ) {
+				wrapU = false;
+			}
+		}
+		for ( ui = 0; ui < U && wrapV; ui++ )
+		{
+			vec3_t d;
+			VectorSubtract( G[ui * V].xyz, G[ui * V + V - 1].xyz, d );
+			if ( VectorLength( d ) > 0.5f ) {
+				wrapV = false;
+			}
+		}
+
+		c.normals.resize( U * V );
+		for ( ui = 0; ui < U; ui++ )
+		{
+			for ( vi = 0; vi < V; vi++ )
+			{
+				int u0 = ui - 1, u1 = ui + 1, v0 = vi - 1, v1 = vi + 1;
+				if ( u0 < 0 ) {
+					u0 = wrapU ? U - 2 : 0;
+				}
+				if ( u1 > U - 1 ) {
+					u1 = wrapU ? 1 : U - 1;
+				}
+				if ( v0 < 0 ) {
+					v0 = wrapV ? V - 2 : 0;
+				}
+				if ( v1 > V - 1 ) {
+					v1 = wrapV ? 1 : V - 1;
+				}
+				vec3_t dU, dV, nrm;
+				VectorSubtract( G[u1 * V + vi].xyz, G[u0 * V + vi].xyz, dU );
+				VectorSubtract( G[ui * V + v1].xyz, G[ui * V + v0].xyz, dV );
+				CrossProduct( dV, dU, nrm ); // the front side: the way the strips below wind (as the stock patch drawing)
+				float l = VectorLength( nrm );
+				if ( l > 1e-6f ) {
+					VectorScale( nrm, 1.0f / l, c.normals[ui * V + vi].xyz );
+				}
+				else
+				{
+					VectorClear( c.normals[ui * V + vi].xyz );
+				}
+			}
+		}
+	}
+	return c.grid.U ? &c : NULL;
+}
+
+static bool Patch_DrawSegMesh( patchMesh_t *pm ){
+	segCache_t *c = Seg_GetCache( pm );
+	if ( !c ) {
+		return false;
+	}
+	const int U = c->grid.U, V = c->grid.V;
+	for ( int vi = 0; vi + 1 < V; vi++ )
+	{
+		qglBegin( GL_QUAD_STRIP );
+		for ( int ui = 0; ui < U; ui++ )
+		{
+			for ( int k = 0; k < 2; k++ ) // front side = cross(dV,dU), like the stock patch drawing
+			{
+				const segPoint_t &g = c->grid.p[ui * V + vi + k];
+				qglNormal3fv( c->normals[ui * V + vi + k].xyz );
+				qglTexCoord2fv( g.st );
+				qglVertex3fv( g.xyz );
+			}
+		}
+		qglEnd();
+	}
+	return true;
+}
+
+static bool Patch_SegRay( patchMesh_t *patch, vec3_t origin, vec3_t dir, double *t, double *u, double *v ){
+	segCache_t *c = Seg_GetCache( patch );
+	if ( !c ) {
+		*t = 0;
+		return false;
+	}
+	const int U = c->grid.U, V = c->grid.V;
+	bool bIntersect = false;
+	float tBest = FLT_MAX;
+
+	for ( int ui = 0; ui + 1 < U; ui++ )
+	{
+		for ( int vi = 0; vi + 1 < V; vi++ )
+		{
+			float *p1 = c->grid.p[ui * V + vi].xyz;
+			float *p2 = c->grid.p[ui * V + vi + 1].xyz;
+			float *p3 = c->grid.p[( ui + 1 ) * V + vi].xyz;
+			float *p4 = c->grid.p[( ui + 1 ) * V + vi + 1].xyz;
+			if ( Triangle_Ray( origin, dir, false, p1, p2, p3, t, u, v ) ) {
+				bIntersect = true;
+				if ( *t < tBest ) {
+					tBest = *t;
+				}
+			}
+			if ( Triangle_Ray( origin, dir, false, p3, p4, p2, t, u, v ) ) {
+				bIntersect = true;
+				if ( *t < tBest ) {
+					tBest = *t;
+				}
+			}
+		}
+	}
+	if ( bIntersect ) {
+		*t = tBest;
+		return true;
+	}
+	*t = 0;
+	return false;
+}
+
+// segH == 0 turns it off. Applies to every selected patch.
+void Patch_SetSegmentsSelected( int segH, int segV ){
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		if ( !b->patchBrush ) {
+			continue;
+		}
+		patchMesh_t *p = b->pPatch;
+		if ( segH <= 0 ) {
+			p->segH = p->segV = 0;
+		}
+		else
+		{
+			p->segH = SegPatch_ClampH( segH, SegPatch_MinH( p ) );
+			p->segV = SegPatch_ClampV( segV );
+		}
+		p->bDirty = true;
+	}
+}
+
+// the smallest horizontal count the first selected segmented patch accepts (3 for a ring, else 1)
+int Patch_SegMinHSelected(){
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		if ( b->patchBrush && b->pPatch->segH > 0 ) {
+			return SegPatch_MinH( b->pPatch );
+		}
+	return SEGPATCH_MIN_H;
+}
+
+// the counts of the first selected patch; false if none is selected. segH is 0 for an ordinary patch
+bool Patch_GetSegmentsSelected( int *segH, int *segV ){
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		if ( b->patchBrush ) {
+			*segH = b->pPatch->segH;
+			*segV = b->pPatch->segV;
+			return true;
+		}
+	}
+	return false;
+}
+
+// the counts of the first selected segmented patch; false if none of the selected patches is segmented
+bool Patch_GetSegmentedSelected( int *segH, int *segV ){
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		if ( b->patchBrush && b->pPatch->segH > 0 ) {
+			*segH = b->pPatch->segH;
+			*segV = b->pPatch->segV;
+			return true;
+		}
+	}
+	return false;
+}
+
+// Make Segmented: ordinary selected patches become segmented with the default counts; if all of
+// them already are, they go back to ordinary patches
+void Patch_ToggleSegmentsSelected(){
+	bool anyPlain = false;
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		if ( b->patchBrush && b->pPatch->segH == 0 ) {
+			anyPlain = true;
+		}
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		if ( !b->patchBrush ) {
+			continue;
+		}
+		patchMesh_t *p = b->pPatch;
+		if ( !anyPlain ) {
+			p->segH = p->segV = 0;
+		}
+		else if ( p->segH == 0 ) {
+			p->segH = SEGPATCH_DEFAULT_H;
+			p->segV = SEGPATCH_DEFAULT_V;
+		}
+		p->bDirty = true;
+	}
+}
+
 void DrawPatchMesh( patchMesh_t *pm ){
+	if ( pm->segH > 0 && Patch_DrawSegMesh( pm ) ) {
+		return;
+	}
+
 	if ( g_PrefsDlg.m_bDisplayLists ) {
 		if ( pm->bDirty || pm->nListID <= 0 || pm->LODUpdated ) {
 			if ( pm->nListID <= 0 ) {
@@ -4046,6 +4309,9 @@ void Patch_RoundSelected(){
 			continue;
 		}
 		patchMesh_t *p = b->pPatch;
+		if ( p->segH > 0 ) {
+			continue; // a segmented patch reads the regular layout, rounding would be misread
+		}
 		roundedCtrl_t r;
 		if ( !Patch_ComputeRounded( p, &r ) ) {
 			continue;
@@ -4073,6 +4339,9 @@ static void Patch_HintPoint( const roundedCtrl_t *r, int bu, int bv, float u, fl
 }
 
 void Patch_DrawHint( patchMesh_t *pm, bool bFill ){
+	if ( pm->segH > 0 ) {
+		return;
+	}
 	const roundedCtrl_t &r = *Patch_GetHint( pm, true );
 
 	const int N = 6;
@@ -4356,6 +4625,7 @@ void Patch_Delete( patchMesh_t *p ){
 	Patch_DeleteDrawLists( p );
 
 	g_patchHints.erase( p ); // the hint dies with its patch
+	g_segCache.erase( p );
 
 	free( p );
 	p = NULL;
@@ -6323,6 +6593,387 @@ void Patch_Thicken( int nAmount, bool bSeam, qboolean bGroupResult ){
 	}
 
 	UpdatePatchInspector();
+}
+
+
+/*
+   ==================
+   Thicken for segmented patches
+   ==================
+   A plain offset of the patch by `depth` along its surface, with the same segment counts, and a
+   wall patch on every open edge. The wall's rim rows are the very rows of the two surfaces, so the
+   shell is watertight.
+
+   Only the on-curve points (even indices) are pushed along the surface normal. The off-curve points
+   are then rebuilt as the intersection of the tangent lines of their two neighbours, which is what
+   keeps an offset circle a true circle (a concentric arc has its corner on the same tangent lines).
+
+   outward: the new surface lies on the outward side of the existing one, so the existing patch
+   becomes the inner wall of the shell. Otherwise the new surface lies inside and the existing patch
+   is the outer wall. "Outward" is away from the middle of the patch; for a flat patch it is the
+   front side. Facing is fixed up on both surfaces so each one faces away from the shell material.
+ */
+static bool Seg_Unit( const float *v, vec3_t out ){
+	float l = sqrtf( v[0] * v[0] + v[1] * v[1] + v[2] * v[2] );
+	if ( l < 1e-4f ) {
+		return false;
+	}
+	VectorScale( v, 1.0f / l, out );
+	return true;
+}
+
+static const float* Seg_CP( patchMesh_t *p, int axis, int fixed, int k ){
+	return axis == 0 ? p->ctrl[k][fixed].xyz : p->ctrl[fixed][k].xyz;
+}
+
+// unit tangent of the control net at on-curve index k of the line `fixed`, along axis (0 = width)
+static bool Seg_Tangent( patchMesh_t *p, int axis, int fixed, int k, bool wrap, vec3_t out ){
+	const int n = axis == 0 ? p->width : p->height;
+	vec3_t t = { 0, 0, 0 };
+	for ( int s = -1; s <= 1; s += 2 )
+	{
+		for ( int step = 1; step <= 2; step++ )
+		{
+			int k2 = k + s * step;
+			if ( k2 < 0 ) {
+				k2 = wrap ? k2 + n - 1 : -1;
+			}
+			else if ( k2 > n - 1 ) {
+				k2 = wrap ? k2 - ( n - 1 ) : -1;
+			}
+			if ( k2 < 0 ) {
+				break;
+			}
+			vec3_t d, u;
+			if ( s > 0 ) {
+				VectorSubtract( Seg_CP( p, axis, fixed, k2 ), Seg_CP( p, axis, fixed, k ), d );
+			}
+			else
+			{
+				VectorSubtract( Seg_CP( p, axis, fixed, k ), Seg_CP( p, axis, fixed, k2 ), d );
+			}
+			if ( Seg_Unit( d, u ) ) {
+				VectorAdd( t, u, t );
+				break;
+			}
+		}
+	}
+	return Seg_Unit( t, out );
+}
+
+// corner of the two tangent lines qa + s*ta and qb + r*tb (ta runs towards the corner, tb away from it)
+static void Seg_Corner( const float *qa, const float *ta, const float *qb, const float *tb, vec3_t out ){
+	vec3_t w, dd;
+	VectorAdd( qa, qb, out );
+	VectorScale( out, 0.5f, out ); // fallback: the middle
+	VectorSubtract( qa, qb, w );
+	const float b = DotProduct( ta, tb ), d = DotProduct( ta, w ), e = DotProduct( tb, w );
+	const float den = 1.0f - b * b;
+	if ( den < 1e-4f ) {
+		return;
+	}
+	const float s = ( b * e - d ) / den, r = ( e - b * d ) / den;
+	VectorSubtract( qb, qa, dd );
+	const float chord = VectorLength( dd );
+	if ( s < -0.01f * chord || r > 0.01f * chord || s > 20.0f * chord || -r > 20.0f * chord ) {
+		return;
+	}
+	vec3_t pa, pb;
+	VectorMA( qa, s, ta, pa );
+	VectorMA( qb, r, tb, pb );
+	VectorAdd( pa, pb, out );
+	VectorScale( out, 0.5f, out );
+}
+
+// off-curve point between two moved on-curve points, from the original p0 - pc - p1
+static void Seg_OffCurve( const float *p0, const float *pc, const float *p1, const float *qa, const float *qb, vec3_t out ){
+	vec3_t d, ta, tb;
+	VectorSubtract( pc, p0, d );
+	bool ok = Seg_Unit( d, ta );
+	VectorSubtract( p1, pc, d );
+	ok = Seg_Unit( d, tb ) && ok;
+	if ( ok ) {
+		Seg_Corner( qa, ta, qb, tb, out );
+	}
+	else
+	{
+		VectorAdd( qa, qb, out );
+		VectorScale( out, 0.5f, out );
+	}
+}
+
+// the wall patch of one edge: 3 across (original rim, middle, new rim) by n along the edge
+static brush_t* Seg_MakeWall( patchMesh_t *p, const vec3_t *A, const vec3_t *B, int n, int count, const float *outDir ){
+	patchMesh_t *w = MakeNewPatch();
+	w->pShader = p->pShader;
+	w->d_texture = p->d_texture;
+	w->width = n;       // along the edge
+	w->height = 3;      // across the thickness: original rim, middle, new rim
+	w->type = PATCH_GENERIC | PATCH_SEAM;
+	for ( int k = 0; k < n; k++ )
+	{
+		VectorCopy( A[k], w->ctrl[k][0].xyz );
+		VectorCopy( B[k], w->ctrl[k][2].xyz );
+		VectorAdd( A[k], B[k], w->ctrl[k][1].xyz );
+		VectorScale( w->ctrl[k][1].xyz, 0.5f, w->ctrl[k][1].xyz );
+	}
+	Patch_Naturalize( w );
+	// the edge carries the original's count (horizontal), across the thickness it is just 1 (vertical)
+	w->segH = SegPatch_ClampH( count, SegPatch_MinH( w ) );
+	w->segV = 1;
+
+	const int m = n / 2;
+	vec3_t along, across, nrm;
+	VectorSubtract( A[m + 1], A[m - 1], along );
+	VectorSubtract( B[m], A[m], across );
+	CrossProduct( across, along, nrm ); // across is now V, along is U
+	if ( DotProduct( nrm, outDir ) >= 0 ) { // reversed on purpose: every created piece is flipped from what the facing logic gives (user request)
+		patchInvert( w );
+	}
+	return AddBrushForPatch( w );
+}
+
+bool Patch_ThickenSegmented( float depth, bool outward ){
+	std::vector<patchMesh_t*> src;
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		if ( b->patchBrush && b->pPatch->segH > 0 ) {
+			src.push_back( b->pPatch );
+		}
+	if ( src.empty() ) {
+		Sys_Printf( "Thicken Segmented: select a segmented patch.\n" );
+		return false;
+	}
+
+	std::vector<brush_t*> created;
+
+	for ( size_t pi = 0; pi < src.size(); pi++ )
+	{
+		patchMesh_t *p = src[pi];
+		const int W = p->width, H = p->height;
+		if ( W % 2 == 0 || H % 2 == 0 ) {
+			Sys_Printf( "Thicken Segmented: skipped a patch with an even number of points.\n" );
+			continue;
+		}
+
+		bool wrapU = W >= 5, wrapV = H >= 5;
+		for ( int j = 0; j < H && wrapU; j++ )
+		{
+			vec3_t d;
+			VectorSubtract( p->ctrl[0][j].xyz, p->ctrl[W - 1][j].xyz, d );
+			if ( VectorLength( d ) > 0.5f ) {
+				wrapU = false;
+			}
+		}
+		for ( int i = 0; i < W && wrapV; i++ )
+		{
+			vec3_t d;
+			VectorSubtract( p->ctrl[i][0].xyz, p->ctrl[i][H - 1].xyz, d );
+			if ( VectorLength( d ) > 0.5f ) {
+				wrapV = false;
+			}
+		}
+
+		// surface normals at the on-curve points (the front side as drawn and compiled: cross(dV,dU))
+		static vec3_t N[MAX_PATCH_WIDTH][MAX_PATCH_HEIGHT];
+		static vec3_t Q[MAX_PATCH_WIDTH][MAX_PATCH_HEIGHT];
+		static bool ok[MAX_PATCH_WIDTH][MAX_PATCH_HEIGHT];
+		int i, j;
+		for ( i = 0; i < W; i += 2 )
+			for ( j = 0; j < H; j += 2 )
+			{
+				vec3_t tu, tv, n;
+				ok[i][j] = false;
+				VectorClear( N[i][j] );
+				if ( Seg_Tangent( p, 0, j, i, wrapU, tu ) && Seg_Tangent( p, 1, i, j, wrapV, tv ) ) {
+					CrossProduct( tv, tu, n );
+					ok[i][j] = Seg_Unit( n, N[i][j] );
+				}
+			}
+		// points without a normal (collapsed edges) borrow from their neighbours
+		for ( int pass = 0; pass < 2; pass++ )
+			for ( i = 0; i < W; i += 2 )
+				for ( j = 0; j < H; j += 2 )
+				{
+					if ( ok[i][j] ) {
+						continue;
+					}
+					vec3_t sum = { 0, 0, 0 };
+					if ( i >= 2 && ok[i - 2][j] ) {
+						VectorAdd( sum, N[i - 2][j], sum );
+					}
+					if ( i + 2 < W && ok[i + 2][j] ) {
+						VectorAdd( sum, N[i + 2][j], sum );
+					}
+					if ( j >= 2 && ok[i][j - 2] ) {
+						VectorAdd( sum, N[i][j - 2], sum );
+					}
+					if ( j + 2 < H && ok[i][j + 2] ) {
+						VectorAdd( sum, N[i][j + 2], sum );
+					}
+					ok[i][j] = Seg_Unit( sum, N[i][j] );
+				}
+
+		// which way is outward: the side of the surface that faces away from the middle of the patch.
+		// Judged ring by ring (each row, and separately each column, against its own centre) so a bent
+		// tube is read by its own axis and not by the centre of the whole bend. Whichever direction
+		// has the rings (the one with the stronger vote) decides; a flat patch votes ~0 either way.
+		float voteRows = 0, voteCols = 0;
+		for ( j = 0; j < H; j += 2 )
+		{
+			vec3_t c = { 0, 0, 0 };
+			int cnt = 0;
+			for ( i = 0; i < W; i += 2 )
+			{
+				VectorAdd( c, p->ctrl[i][j].xyz, c );
+				cnt++;
+			}
+			VectorScale( c, 1.0f / cnt, c );
+			for ( i = 0; i < W; i += 2 )
+			{
+				vec3_t d;
+				VectorSubtract( p->ctrl[i][j].xyz, c, d );
+				voteRows += DotProduct( d, N[i][j] );
+			}
+		}
+		for ( i = 0; i < W; i += 2 )
+		{
+			vec3_t c = { 0, 0, 0 };
+			int cnt = 0;
+			for ( j = 0; j < H; j += 2 )
+			{
+				VectorAdd( c, p->ctrl[i][j].xyz, c );
+				cnt++;
+			}
+			VectorScale( c, 1.0f / cnt, c );
+			for ( j = 0; j < H; j += 2 )
+			{
+				vec3_t d;
+				VectorSubtract( p->ctrl[i][j].xyz, c, d );
+				voteCols += DotProduct( d, N[i][j] );
+			}
+		}
+		float vote = fabsf( voteRows ) >= fabsf( voteCols ) ? voteRows : voteCols;
+		if ( fabsf( vote ) < 1e-3f ) {
+			// not a tube at all: fall back to the middle of the whole patch
+			vec3_t c = { 0, 0, 0 };
+			int cnt = 0;
+			for ( i = 0; i < W; i += 2 )
+				for ( j = 0; j < H; j += 2 )
+				{
+					VectorAdd( c, p->ctrl[i][j].xyz, c );
+					cnt++;
+				}
+			VectorScale( c, 1.0f / cnt, c );
+			for ( i = 0; i < W; i += 2 )
+				for ( j = 0; j < H; j += 2 )
+				{
+					vec3_t d;
+					VectorSubtract( p->ctrl[i][j].xyz, c, d );
+					vote += DotProduct( d, N[i][j] );
+				}
+		}
+		const bool frontIsOutward = vote >= 0;
+		Sys_Printf( "Thicken Segmented: the patch faces %s (rows %.0f, columns %.0f)\n", frontIsOutward ? "outward" : "inward", voteRows, voteCols );
+		const float off = ( outward ? 1.0f : -1.0f ) * ( frontIsOutward ? 1.0f : -1.0f ) * depth;
+
+		// on-curve points move along the normal
+		int unmoved = 0;
+		for ( i = 0; i < W; i += 2 )
+			for ( j = 0; j < H; j += 2 )
+			{
+				if ( ok[i][j] ) {
+					VectorMA( p->ctrl[i][j].xyz, off, N[i][j], Q[i][j] );
+				}
+				else
+				{
+					VectorCopy( p->ctrl[i][j].xyz, Q[i][j] );
+					unmoved++;
+				}
+			}
+		// off-curve points along the height, then along the width (rows between are filled by then)
+		for ( i = 0; i < W; i += 2 )
+			for ( j = 1; j < H; j += 2 )
+				Seg_OffCurve( p->ctrl[i][j - 1].xyz, p->ctrl[i][j].xyz, p->ctrl[i][j + 1].xyz, Q[i][j - 1], Q[i][j + 1], Q[i][j] );
+		for ( i = 1; i < W; i += 2 )
+			for ( j = 0; j < H; j++ )
+				Seg_OffCurve( p->ctrl[i - 1][j].xyz, p->ctrl[i][j].xyz, p->ctrl[i + 1][j].xyz, Q[i - 1][j], Q[i + 1][j], Q[i][j] );
+		if ( unmoved ) {
+			Sys_Printf( "Thicken Segmented: %d points on collapsed edges could not be pushed out.\n", unmoved );
+		}
+
+		// the new surface
+		patchMesh_t *pNew = Patch_Duplicate( p );
+		for ( i = 0; i < W; i++ )
+			for ( j = 0; j < H; j++ )
+				VectorCopy( Q[i][j], pNew->ctrl[i][j].xyz );
+		pNew->type |= PATCH_THICK;
+
+		// walls on the open edges (before any of the surfaces is turned around)
+		static vec3_t A[MAX_PATCH_WIDTH + MAX_PATCH_HEIGHT], B[MAX_PATCH_WIDTH + MAX_PATCH_HEIGHT];
+		for ( int e = 0; e < 4; e++ )
+		{
+			const bool column = e < 2; // edges at i = 0 and i = W-1 run along the height
+			if ( column ? wrapU : wrapV ) {
+				continue;
+			}
+			const int n = column ? H : W;
+			const int fix = column ? ( e == 0 ? 0 : W - 1 ) : ( e == 2 ? 0 : H - 1 );
+			const int m = n / 2;
+			bool collapsed = true;
+			for ( int k = 0; k < n; k++ )
+			{
+				const float *a = column ? p->ctrl[fix][k].xyz : p->ctrl[k][fix].xyz;
+				const float *q = column ? Q[fix][k] : Q[k][fix];
+				VectorCopy( a, A[k] );
+				VectorCopy( q, B[k] );
+				vec3_t d;
+				VectorSubtract( a, A[0], d );
+				if ( VectorLength( d ) > 0.05f ) {
+					collapsed = false;
+				}
+			}
+			if ( collapsed ) {
+				continue;
+			}
+			// the way out of the patch at this edge
+			vec3_t outDir;
+			if ( column ) {
+				const int inner = fix == 0 ? 2 : W - 3;
+				VectorSubtract( p->ctrl[fix][m].xyz, p->ctrl[inner][m].xyz, outDir );
+			}
+			else
+			{
+				const int inner = fix == 0 ? 2 : H - 3;
+				VectorSubtract( p->ctrl[m][fix].xyz, p->ctrl[m][inner].xyz, outDir );
+			}
+			brush_t *wb = Seg_MakeWall( p, A, B, n, column ? p->segV : p->segH, outDir );
+			if ( wb ) {
+				created.push_back( wb );
+			}
+		}
+
+		// Every surface must face away from the material between them: the outer one outward, the inner
+		// one inward. The side a patch shows its face on is cross(dU,dV) (verified on screen), which is
+		// the opposite of the normal N used above; frontIsOutward only says where N points.
+		const bool origFacesOutward = !frontIsOutward;
+		const bool wantOrigOutward = !outward;   // Outward: the original becomes the inner wall
+		const bool wantNewOutward = outward;
+		if ( origFacesOutward != wantOrigOutward ) {
+			patchInvert( p );
+		}
+		if ( origFacesOutward != wantNewOutward ) {
+			patchInvert( pNew ); // the new one starts out facing like the original did
+		}
+		Patch_Rebuild( p );
+		Patch_Rebuild( pNew );
+		created.push_back( pNew->pSymbiot );
+	}
+
+	for ( size_t k = 0; k < created.size(); k++ )
+		Select_Brush( created[k] );
+
+	UpdatePatchInspector();
+	return true;
 }
 
 

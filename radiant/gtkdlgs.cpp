@@ -2319,6 +2319,65 @@ void DoThickenDlg(){
 }
 
 // =============================================================================
+// Thicken Segmented dialog
+
+void DoSegThickenDlg(){
+	GtkWidget *dialog, *vbox, *hbox, *label, *content_area, *spin, *rOut, *rIn;
+	static double depth = 8;
+	static bool outward = true;
+
+	dialog = gtk_dialog_new_with_buttons( _( "Thicken Segmented" ), NULL, GTK_DIALOG_DESTROY_WITH_PARENT, NULL );
+	gtk_window_set_transient_for( GTK_WINDOW( dialog ), GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	gtk_dialog_add_button( GTK_DIALOG( dialog ), _( "OK" ), GTK_RESPONSE_OK );
+	gtk_dialog_add_button( GTK_DIALOG( dialog ), _( "Cancel" ), GTK_RESPONSE_CANCEL );
+	content_area = gtk_dialog_get_content_area( GTK_DIALOG( dialog ) );
+
+	vbox = gtk_vbox_new( FALSE, 5 );
+	gtk_container_add( GTK_CONTAINER( content_area ), vbox );
+	gtk_container_set_border_width( GTK_CONTAINER( vbox ), 5 );
+	gtk_widget_show( vbox );
+
+	label = gtk_label_new( _( "Offsets the selected segmented patch by the depth,\n"
+							  "keeps its segment counts and closes the open edges with walls." ) );
+	gtk_misc_set_alignment( GTK_MISC( label ), 0.0, 0.5 );
+	gtk_box_pack_start( GTK_BOX( vbox ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+
+	hbox = gtk_hbox_new( FALSE, 5 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, TRUE, 0 );
+	gtk_widget_show( hbox );
+	label = gtk_label_new( _( "Depth:" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+	spin = gtk_spin_button_new( GTK_ADJUSTMENT( gtk_adjustment_new( depth, 0.25, 4096, 0.25, 4, 0 ) ), 0.25, 2 );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( spin ), TRUE );
+	gtk_entry_set_alignment( GTK_ENTRY( spin ), 1.0 );
+	gtk_box_pack_start( GTK_BOX( hbox ), spin, FALSE, FALSE, 0 );
+	gtk_widget_show( spin );
+
+	rOut = gtk_radio_button_new_with_label( NULL, _( "Outward: the existing patch is the inside of the shell" ) );
+	rIn = gtk_radio_button_new_with_label_from_widget( GTK_RADIO_BUTTON( rOut ), _( "Inward: the existing patch is the outside of the shell" ) );
+	gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( outward ? rOut : rIn ), TRUE );
+	gtk_box_pack_start( GTK_BOX( vbox ), rOut, FALSE, FALSE, 0 );
+	gtk_box_pack_start( GTK_BOX( vbox ), rIn, FALSE, FALSE, 0 );
+	gtk_widget_show( rOut );
+	gtk_widget_show( rIn );
+
+	label = gtk_label_new( _( "Outward is away from the middle of the patch (the front side for a flat patch)." ) );
+	gtk_misc_set_alignment( GTK_MISC( label ), 0.0, 0.5 );
+	gtk_box_pack_start( GTK_BOX( vbox ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+
+	if ( gtk_dialog_run( GTK_DIALOG( dialog ) ) == GTK_RESPONSE_OK ) {
+		depth = gtk_spin_button_get_value( GTK_SPIN_BUTTON( spin ) );
+		outward = gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( rOut ) ) != FALSE;
+		Patch_ThickenSegmented( (float)depth, outward );
+		Sys_UpdateWindows( W_ALL );
+	}
+	gtk_widget_destroy( dialog );
+}
+
+// =============================================================================
 // About dialog (no program is complete without one)
 
 static const int ABT_WIDGET_PADDING = 8;

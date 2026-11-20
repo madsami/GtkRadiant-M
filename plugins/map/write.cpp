@@ -27,6 +27,7 @@ static int g_count_entities;
 static int g_count_brushes;
 
 #include "plugin.h"
+#include "segpatch.h"
 extern int g_MapVersion;
 
 void Float_Write( float data, IDataStream *out ){
@@ -74,6 +75,78 @@ void Patch_Write( patchMesh_t *pPatch, IDataStream *out ){
 		out->printf( ")\n" );
 	}
 	out->printf( ")\n}\n" );
+}
+
+static const char* Patch_ShaderForFile( patchMesh_t *pPatch ){
+	const char *str = pPatch->pShader->getName();
+	if ( strchr( str, ' ' ) ) {
+		Sys_FPrintf( SYS_WRN, "WARNING: Patch_Write: shader names with spaces are not allowed, ignoring '%s'\n", str );
+		str = SHADER_NOT_FOUND;
+	}
+	if ( !strncmp( str, "textures/", 9 ) ) {
+		str += 9;
+	}
+	return str;
+}
+
+// A segmented patch (see segpatch.h) is saved as its cage in comment lines (//@seg), which the
+// compilers ignore, followed by the generated pieces as ordinary patches, which they compile.
+// Map_Read turns the comment lines back into the cage and drops the pieces.
+static bool SegPatch_Write( patchMesh_t *p, IDataStream *out ){
+	segGrid_t g;
+	if ( !SegPatch_BuildGrid( p, p->segH, p->segV, g ) ) {
+		return false;
+	}
+	std::vector<segPiece_t> pieces;
+	SegPatch_Pieces( g, pieces );
+	const char *str = Patch_ShaderForFile( p );
+
+	out->printf( "// brush %i (segmented patch, %i x %i segments)\n", g_count_brushes++, p->segH, p->segV );
+	out->printf( "//@seg {\n//@seg patchDef3\n//@seg {\n//@seg %s\n//@seg ( %i %i %i %i 0 0 0 )\n//@seg (\n",
+				 str, p->width, p->height, p->segH, p->segV );
+	for ( int i = 0; i < p->width; i++ )
+	{
+		out->printf( "//@seg ( " );
+		for ( int j = 0; j < p->height; j++ )
+		{
+			out->printf( "( " );
+			Float_Write( p->ctrl[i][j].xyz[0], out );
+			Float_Write( p->ctrl[i][j].xyz[1], out );
+			Float_Write( p->ctrl[i][j].xyz[2], out );
+			Float_Write( p->ctrl[i][j].st[0], out );
+			Float_Write( p->ctrl[i][j].st[1], out );
+			out->printf( ") " );
+		}
+		out->printf( ")\n" );
+	}
+	out->printf( "//@seg )\n//@seg }\n//@seg }\n" );
+
+	out->printf( "// segpieces begin %i\n", (int)pieces.size() );
+	for ( size_t n = 0; n < pieces.size(); n++ )
+	{
+		const segPiece_t &pc = pieces[n];
+		out->printf( "// brush %i\n{\n", g_count_brushes++ );
+		out->printf( "patchDef2\n{\n%s\n( %i %i 0 0 0 )\n(\n", str, pc.width, pc.height );
+		for ( int x = 0; x < pc.width; x++ )
+		{
+			out->printf( "( " );
+			for ( int y = 0; y < pc.height; y++ )
+			{
+				const segPoint_t &c = pc.c[x * pc.height + y];
+				out->printf( "( " );
+				Float_Write( c.xyz[0], out );
+				Float_Write( c.xyz[1], out );
+				Float_Write( c.xyz[2], out );
+				Float_Write( c.st[0], out );
+				Float_Write( c.st[1], out );
+				out->printf( ") " );
+			}
+			out->printf( ")\n" );
+		}
+		out->printf( ")\n}\n}\n" );
+	}
+	out->printf( "// segpieces end\n" );
+	return true;
 }
 
 void Face_Write( face_t *face, IDataStream *out, bool bAlternateTexdef = false ){
@@ -157,6 +230,9 @@ void Face_Write( face_t *face, IDataStream *out, bool bAlternateTexdef = false )
 }
 
 void Primitive_Write( brush_t *pBrush, IDataStream *out ){
+	if ( pBrush->patchBrush && pBrush->pPatch->segH > 0 && g_MapVersion == MAPVERSION_Q3 && SegPatch_Write( pBrush->pPatch, out ) ) {
+		return;
+	}
 	if ( ( g_MapVersion == MAPVERSION_Q2 ) && ( pBrush->patchBrush ) ) {
 		Sys_FPrintf( SYS_WRN, "WARNING: Primitive_Write: Patches are not supported in Quake2, ignoring Brush %d\n", g_count_brushes++ );
 	}

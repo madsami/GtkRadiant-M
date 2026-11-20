@@ -64,6 +64,13 @@ int m_nRow;
 GtkWidget *m_pRowCombo;
 GtkWidget *m_pColCombo;
 
+// segmented patches (segpatch.h): the segment counts of the selected patches
+GtkWidget *m_pSegCheck;
+GtkWidget *m_pSegHSpin;
+GtkWidget *m_pSegVSpin;
+bool m_bSegListen;
+void UpdateSegInfo();
+
 GtkWidget *GetWidget() { return m_pWidget; }
 
 // 0 is invalid, otherwise it's the Id of the last 'do' we are responsible for

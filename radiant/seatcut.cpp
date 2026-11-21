@@ -206,10 +206,35 @@ static bool Seat_Hull( const std::vector<SeatV3> &P, std::vector<SeatFace> &face
 }
 
 // the hull as planes, coplanar faces made one; false if there are more than SEAT_MAX_PLANES
-static bool Seat_HullPlanes( const std::vector<SeatV3> &P, seatHull_t &h ){
+static bool Seat_HullPlanes( const std::vector<SeatV3> &P, seatHull_t &h, std::vector<float> *edges = NULL ){
 	std::vector<SeatFace> faces;
 	if ( !Seat_Hull( P, faces ) ) {
 		return false;
+	}
+	if ( edges ) {
+		// the edges of the hull where its surface really bends (not the diagonals inside one flat face), as line pairs
+		edges->clear();
+		std::map<std::pair<int, int>, int> dir;
+		for ( size_t k = 0; k < faces.size(); k++ )
+			for ( int e = 0; e < 3; e++ )
+				dir[std::make_pair( faces[k].v[e], faces[k].v[( e + 1 ) % 3] )] = (int)k;
+		for ( std::map<std::pair<int, int>, int>::iterator it = dir.begin(); it != dir.end(); ++it )
+		{
+			const int a = it->first.first, b = it->first.second;
+			if ( a > b ) {
+				continue;
+			}
+			std::map<std::pair<int, int>, int>::iterator ot = dir.find( std::make_pair( b, a ) );
+			if ( ot == dir.end() ) {
+				continue;
+			}
+			if ( Seat_Dot( faces[it->second].n, faces[ot->second].n ) < 0.9999f ) {
+				for ( int k = 0; k < 3; k++ )
+					edges->push_back( P[a].v[k] );
+				for ( int k = 0; k < 3; k++ )
+					edges->push_back( P[b].v[k] );
+			}
+		}
 	}
 	const float dots[3] = { 0.99995f, 0.9995f, 0.995f };
 	for ( int pass = 0; pass < 3; pass++ )
@@ -277,7 +302,11 @@ static bool Seat_SameHulls( const patchMesh_t *p, const std::vector<seatHull_t> 
 	return true;
 }
 
+// the edges of the hull of every cutter (by cutter id), for the outline that shows where the cut is
+static std::map<int, std::vector<float> > g_seatCue;
+
 static bool Seat_Apply( bool report ){
+	g_seatCue.clear();
 	std::vector<patchMesh_t*> all = Seat_AllPatches();
 	std::map<int, std::vector<patchMesh_t*> > cutters;
 	for ( size_t i = 0; i < all.size(); i++ )
@@ -299,7 +328,9 @@ static bool Seat_Apply( bool report ){
 		Host h;
 		h.p = all[i];
 		h.g = NULL;
-		if ( all[i]->segH > 0 && all[i]->seatId <= 0 ) {
+		// every segmented patch can be cut, a cutter too (by the cutters that come before it), unless it was
+		// switched off ("Can be cut")
+		if ( all[i]->segH > 0 && !all[i]->seatNoCut ) {
 			h.g = Patch_GetSegGrid( all[i] );
 		}
 		if ( h.g ) {
@@ -343,7 +374,8 @@ static bool Seat_Apply( bool report ){
 		seatHull_t hull;
 		memset( &hull, 0, sizeof( hull ) );
 		hull.id = it->first;
-		if ( !Seat_HullPlanes( pts, hull ) ) {
+		if ( !Seat_HullPlanes( pts, hull, &g_seatCue[it->first] ) ) {
+			g_seatCue.erase( it->first );
 			if ( report ) {
 				Sys_Printf( "Seat cut: the cutter %d has no usable hull (flat, or more than %d faces); lower its segments.\n", it->first, SEAT_MAX_PLANES );
 			}
@@ -354,6 +386,11 @@ static bool Seat_Apply( bool report ){
 		{
 			Host &h = hosts[i];
 			if ( !h.g ) {
+				continue;
+			}
+			// A cutter cuts the patches that are not cutters and those of the cutters that come after it. A cutter
+			// never cuts its own patches, and two cutters never cut each other (that would leave a hole in both).
+			if ( h.p->seatId > 0 && h.p->seatId <= it->first ) {
 				continue;
 			}
 			bool apart = false;
@@ -432,7 +469,7 @@ static unsigned long long Seat_StateHash( bool *any ){
 		if ( p->segH <= 0 ) {
 			continue;
 		}
-		Seat_Mix( h, (unsigned int)p->seatId );
+		Seat_Mix( h, (unsigned int)( p->seatId * 2 + ( p->seatNoCut ? 1 : 0 ) ) );
 		Seat_Mix( h, (unsigned int)( p->segH * 256 + p->segV ) );
 		Seat_Mix( h, (unsigned int)( p->width * 256 + p->height ) );
 		for ( int x = 0; x < p->width; x++ )
@@ -510,16 +547,68 @@ bool Seat_MakeSelected(){
 		id = Seat_TopId() + 1;
 	}
 	for ( size_t i = 0; i < sel.size(); i++ )
-	{
 		sel[i]->seatId = id;
-		sel[i]->seatCount = 0; // a cutter is not cut itself
-	}
 	if ( skipped ) {
 		Sys_Printf( "Seat Cut: %d patch(es) that are not segmented were left out.\n", skipped );
 	}
 	Seat_Apply( true );
 	Sys_UpdateWindows( W_ALL );
 	return true;
+}
+
+// what the panel shows: the first selected segmented patch
+bool Seat_GetSelected( bool *isCutter, bool *canBeCut ){
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		if ( b->patchBrush && b->pPatch && b->pPatch->segH > 0 ) {
+			*isCutter = b->pPatch->seatId > 0;
+			*canBeCut = !b->pPatch->seatNoCut;
+			return true;
+		}
+	return false;
+}
+
+// The Cut box of the panel. On: the selected patches that are no cutter yet become one (a single patch its own
+// cutter; several selected at once one cutter together). Nothing about a patch changes but that. Off: they stop.
+bool Seat_SetCutterSelected( bool on ){
+	std::vector<patchMesh_t*> sel;
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		if ( b->patchBrush && b->pPatch && b->pPatch->segH > 0 ) {
+			sel.push_back( b->pPatch );
+		}
+	if ( sel.empty() ) {
+		return false;
+	}
+	int id = 0;
+	for ( size_t i = 0; i < sel.size(); i++ )
+	{
+		if ( !on ) {
+			sel[i]->seatId = 0;
+		}
+		else if ( sel[i]->seatId == 0 ) {
+			if ( id == 0 ) {
+				id = Seat_TopId() + 1;
+			}
+			sel[i]->seatId = id;
+		}
+	}
+	Seat_Apply( true );
+	Sys_UpdateWindows( W_ALL );
+	return true;
+}
+
+// The Can be cut box: off keeps every cutter from cutting a hole into the selected patches
+bool Seat_SetCanBeCutSelected( bool can ){
+	bool any = false;
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		if ( b->patchBrush && b->pPatch && b->pPatch->segH > 0 ) {
+			b->pPatch->seatNoCut = can ? 0 : 1;
+			any = true;
+		}
+	if ( any ) {
+		Seat_Apply( true );
+		Sys_UpdateWindows( W_ALL );
+	}
+	return any;
 }
 
 bool Seat_ClearSelected(){
@@ -610,4 +699,77 @@ void Seat_ImportEnd(){
 		}
 	}
 	g_seatBefore.clear();
+}
+
+// =============================================================================
+// the outline of an active cutter
+
+static void Seat_StripLine( const segGrid_t *g, int u0, int v0, int du, int dv, int count ){
+	qglBegin( GL_LINE_STRIP );
+	for ( int k = 0; k < count; k++ )
+		qglVertex3fv( g->p[( u0 + du * k ) * g->V + v0 + dv * k].xyz );
+	qglEnd();
+}
+
+static bool Seat_SamePoint( const float *a, const float *b ){
+	return fabsf( a[0] - b[0] ) + fabsf( a[1] - b[1] ) + fabsf( a[2] - b[2] ) < 0.5f;
+}
+
+// Drawn in the grid views and the camera: the border of every active cutter patch in a bright colour (the seam of a
+// ring is left out), and, once the holes are up to date, the edges of the hull that cuts them.
+void Seat_Draw(){
+	std::vector<patchMesh_t*> all = Seat_AllPatches();
+	std::vector<patchMesh_t*> cutters;
+	for ( size_t i = 0; i < all.size(); i++ )
+		if ( all[i]->seatId > 0 && all[i]->segH > 0 ) {
+			cutters.push_back( all[i] );
+		}
+	if ( cutters.empty() ) {
+		return;
+	}
+
+	qglPushAttrib( GL_ALL_ATTRIB_BITS );
+	qglDisable( GL_TEXTURE_2D );
+	qglDisable( GL_LIGHTING );
+	qglDisable( GL_CULL_FACE );
+	qglDisable( GL_DEPTH_TEST );
+	qglDisable( GL_LINE_STIPPLE );
+
+	if ( !g_seatPending ) {
+		qglEnable( GL_BLEND );
+		qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+		qglLineWidth( 1 );
+		qglColor4f( 0.1f, 0.9f, 1.0f, 0.55f );
+		for ( std::map<int, std::vector<float> >::iterator it = g_seatCue.begin(); it != g_seatCue.end(); ++it )
+		{
+			qglBegin( GL_LINES );
+			for ( size_t k = 0; k + 2 < it->second.size(); k += 3 )
+				qglVertex3fv( &it->second[k] );
+			qglEnd();
+		}
+		qglDisable( GL_BLEND );
+	}
+
+	qglLineWidth( 3 );
+	qglColor3f( 0.1f, 0.9f, 1.0f );
+	for ( size_t i = 0; i < cutters.size(); i++ )
+	{
+		const segGrid_t *g = Patch_GetSegGrid( cutters[i] );
+		if ( !g || g->U < 2 || g->V < 2 ) {
+			continue;
+		}
+		const int U = g->U, V = g->V;
+		bool ringU = Seat_SamePoint( g->p[0].xyz, g->p[( U - 1 ) * V].xyz ) && Seat_SamePoint( g->p[V - 1].xyz, g->p[( U - 1 ) * V + V - 1].xyz );
+		bool ringV = Seat_SamePoint( g->p[0].xyz, g->p[V - 1].xyz ) && Seat_SamePoint( g->p[( U - 1 ) * V].xyz, g->p[( U - 1 ) * V + V - 1].xyz );
+		if ( !ringU ) {
+			Seat_StripLine( g, 0, 0, 0, 1, V );
+			Seat_StripLine( g, U - 1, 0, 0, 1, V );
+		}
+		if ( !ringV ) {
+			Seat_StripLine( g, 0, 0, 1, 0, U );
+			Seat_StripLine( g, 0, V - 1, 1, 0, U );
+		}
+	}
+	qglLineWidth( 1 );
+	qglPopAttrib();
 }

@@ -21,6 +21,17 @@ bool Seat_MakeSelected();
 // The selected patches stop being cutters; the holes they made close
 bool Seat_ClearSelected();
 
+// The panel's Cut box: the selected segmented patches become a cutter (or stop being one), each patch on its own
+// unless several are selected at once. The state shown is that of the first selected segmented patch.
+bool Seat_GetSelected( bool *isCutter, bool *canBeCut );
+bool Seat_SetCutterSelected( bool on );
+
+// The panel's Can be cut box: off, and no cutter cuts a hole into the selected patches
+bool Seat_SetCanBeCutSelected( bool can );
+
+// The outline of the active cutters, drawn in every view
+void Seat_Draw();
+
 // Select every patch of the cutter(s) that have a patch selected. Returns how many patches were added.
 int Seat_SelectWhole();
 

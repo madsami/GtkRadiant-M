@@ -458,6 +458,7 @@ typedef struct {
 	int seatId;
 	int seatCount;
 	seatHull_t seat[SEAT_MAX_HULLS];
+	int seatNoCut;      // 1: no cutter cuts a hole into this patch ("Can be cut" is off)
 } patchMesh_t;
 
 typedef struct brush_s

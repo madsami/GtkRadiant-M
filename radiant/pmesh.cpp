@@ -67,7 +67,7 @@ patchMesh_t* Patch_Alloc(){
 	pPatch->LODUpdated = false;
 	pPatch->segH = pPatch->segV = 0;
 	pPatch->cogId = 0;
-	pPatch->seatId = pPatch->seatCount = 0;
+	pPatch->seatId = pPatch->seatCount = pPatch->seatNoCut = 0;
 
 	int i;
 	for ( i = 0; i < ( ( ( MAX_PATCH_WIDTH - 1 ) - 1 ) / 2 ); i++ )
@@ -87,7 +87,7 @@ patchMesh_t* MakeNewPatch(){
 	pm->bDirty = true;
 	pm->segH = pm->segV = 0;
 	pm->cogId = 0;
-	pm->seatId = pm->seatCount = 0;
+	pm->seatId = pm->seatCount = pm->seatNoCut = 0;
 
 	return pm;
 }

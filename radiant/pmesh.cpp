@@ -4149,7 +4149,8 @@ static bool Patch_DirTo( const float *a, const float *b, vec3_t out ){
 // the two ends meet, which is where the regular cylinder puts it), and the rounding is applied to
 // that. So already rounded or hand-edited points are not rounded a second time, and the result is
 // the same however many times it is applied.
-static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out ){
+// regularOnly: stop at the regular position (the corner where the tangents meet), no pulling in, no snapping
+static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out, bool regularOnly = false ){
 	const float minArc = 0.15f;  // ~9 degrees
 	const float maxArc = 1.75f;  // ~100 degrees
 	bool changed = false;
@@ -4283,8 +4284,8 @@ static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out ){
 				}
 				float corner = 0.5f * ( ( A[a] + s * u[a] ) + ( B[a] + t * v[a] ) );
 				float mid = ( A[a] + B[a] ) * 0.5f;
-				float val = floorf( ( corner + sc * ( mid - corner ) ) / step + 0.5f ) * step;
-				if ( val != p->ctrl[i][j].xyz[a] ) {
+				float val = regularOnly ? corner : floorf( ( corner + sc * ( mid - corner ) ) / step + 0.5f ) * step;
+				if ( fabsf( val - p->ctrl[i][j].xyz[a] ) > ( regularOnly ? 0.001f : 0.0f ) ) {
 					changed = true;
 				}
 				out->v[i][j][a] = val;
@@ -4459,6 +4460,35 @@ void Patch_DrawHint( patchMesh_t *pm, bool bFill ){
 
 	// mark the hint's control points that the patch has not reached yet: drag the vertex onto the dot
 	if ( r.width == pm->width && r.height == pm->height ) {
+// Puts the off-curve points of every row of the selected patches back on their regular corners: where the
+// tangents at the two on-curve neighbours meet. Undoes the hand adjusted "improved" corners; the on-curve
+// points, and so the bend of the patch in the other direction, are not touched.
+void Patch_RegularSelected(){
+	int count = 0;
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		if ( !b->patchBrush ) {
+			continue;
+		}
+		patchMesh_t *p = b->pPatch;
+		roundedCtrl_t r;
+		if ( !Patch_ComputeRounded( p, &r, true ) ) {
+			continue;
+		}
+		for ( int i = 0; i < p->width; i++ )
+			for ( int j = 0; j < p->height; j++ )
+				VectorCopy( r.v[i][j], p->ctrl[i][j].xyz );
+
+		p->bDirty = true;
+		vec3_t vMin, vMax;
+		Patch_CalcBounds( p, vMin, vMax );
+		Brush_RebuildBrush( p->pSymbiot, vMin, vMax );
+		count++;
+	}
+	Sys_Printf( "Regular Corners: %d patch(es) changed.\n", count );
+	UpdatePatchInspector();
+}
+
 		qglPointSize( 5 );
 		qglColor4f( 1.0f, 0.8f, 0.2f, 1.0f );
 		qglBegin( GL_POINTS );

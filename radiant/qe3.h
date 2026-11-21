@@ -431,6 +431,7 @@ void Patch_DrawCam( patchMesh_t *p );
 void Patch_DrawXY( patchMesh_t *p );
 extern bool g_bPatchRoundHint;
 void Patch_RoundSelected();
+void Patch_RegularSelected();
 void Patch_SetHintFromSelected();
 void Patch_SetSegmentsSelected( int segH, int segV );  // segmented patches (segpatch.h); segH 0 = ordinary patch
 bool Patch_GetSegmentsSelected( int *segH, int *segV );

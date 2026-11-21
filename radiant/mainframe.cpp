@@ -638,6 +638,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_ROUNDHINT: g_pParentWnd->OnCurveRoundhint(); break;
 		  case ID_CURVE_ROUNDSELECTED: g_pParentWnd->OnCurveRoundselected(); break;
 		  case ID_CURVE_SETHINT: g_pParentWnd->OnCurveSethint(); break;
+		  case ID_CURVE_REGULARSELECTED: g_pParentWnd->OnCurveRegularselected(); break;
 		  case ID_CURVE_PATCHHINTEDTUBE: g_pParentWnd->OnCurvePatchhintedtube(); break;
 		  case ID_CURVE_ROUNDCYLINDER: g_pParentWnd->OnCurveSegcylinder(); break;
 		  case ID_CURVE_ROUNDDISPLAY: g_pParentWnd->OnCurveSegtoggle(); break;
@@ -1663,6 +1664,7 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		menu_separator( menu );
 		item = create_menu_item_with_mnemonic( menu, _( "Simple Patch Mesh..." ),
 											   G_CALLBACK( HandleCommand ), ID_CURVE_SIMPLEPATCHMESH );
+		create_menu_item_with_mnemonic( menu, _( "Restore Regular Corners" ), G_CALLBACK( HandleCommand ), ID_CURVE_REGULARSELECTED );
 		g_object_set_data( G_OBJECT( window ), "menu_simplepatchmesh", item );
 		create_menu_item_with_mnemonic( menu, _( "Patch Inspector..." ), G_CALLBACK( HandleCommand ), ID_PATCH_INSPECTOR );
 		menu_separator( menu );
@@ -6827,6 +6829,14 @@ void MainFrame::OnCurveSegcylinder(){
 	Undo_AddBrushList( &selected_brushes );
 	Patch_BrushToMesh( false ); // the regular cylinder: it is the control polygon of an exact circle
 	Patch_SetSegmentsSelected( SEGPATCH_DEFAULT_H, SEGPATCH_DEFAULT_V );
+	Sys_UpdateWindows( W_ALL );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+void MainFrame::OnCurveRegularselected(){
+	Undo_Start( "restore regular corners" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_RegularSelected();
 	Sys_UpdateWindows( W_ALL );
 	Undo_EndBrushList( &selected_brushes );
 	Undo_End();

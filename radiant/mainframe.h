@@ -187,6 +187,7 @@ struct SKeyInfo
 #define ID_CURVE_ROUNDDISPLAY           40339
 #define ID_CURVE_SEGTHICKEN             40340
 #define ID_CURVE_BEVELEDGE              40341
+#define ID_CURVE_REGULARSELECTED        40342
 #define ID_CURVE_COG                    40343
 #define ID_CURVE_COGSELECT              40344
 #define ID_CURVE_SEGCAP                 40345
@@ -833,6 +834,7 @@ void OnCurveRoundselected();
 void OnCurveSethint();
 void OnCurvePatchhintedtube();
 void OnCurveSegcylinder();
+void OnCurveRegularselected();
 void OnCurveSegtoggle();
 void OnCurveSegthicken();
 void OnCurveBeveledge();

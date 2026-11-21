@@ -189,6 +189,9 @@ struct SKeyInfo
 #define ID_CURVE_BEVELEDGE              40341
 #define ID_CURVE_COG                    40343
 #define ID_CURVE_COGSELECT              40344
+#define ID_CURVE_SEGCAP                 40345
+#define ID_CURVE_SEGCAPTOP              40346
+#define ID_CURVE_SEGCAPBOT              40347
 #define ID_CURVE_PATCHDENSETUBE         32955
 #define ID_CURVE_PATCHVERYDENSETUBE     32956
 #define ID_CURVE_CAP                    32957
@@ -835,6 +838,9 @@ void OnCurveSegthicken();
 void OnCurveBeveledge();
 void OnCurveCog();
 void OnCurveCogSelect();
+void OnCurveSegcap();
+void OnCurveSegcaptop();
+void OnCurveSegcapbot();
 void OnPatchWeld();
 void OnCurvePatchbevel();
 void OnCurvePatchendcap();

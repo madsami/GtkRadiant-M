@@ -1308,6 +1308,7 @@ static gboolean BevelPanelTick( gpointer data ){
 static GtkWidget *g_cogPanel = NULL;
 static GtkWidget *g_cogTeeth = NULL, *g_cogRadius = NULL, *g_cogDepth = NULL, *g_cogTipW = NULL;
 static GtkWidget *g_cogCone = NULL, *g_cogCone2 = NULL;
+static GtkWidget *g_cogSocket = NULL, *g_cogOuter = NULL, *g_cogClear = NULL, *g_cogFloor = NULL;
 static GtkWidget *g_cogBand = NULL, *g_cogTipArc = NULL, *g_cogRootArc = NULL, *g_cogSnap = NULL;
 static const float g_cogSnapSteps[5] = { 0.0f, 0.125f, 0.25f, 0.5f, 1.0f };
 static GtkWidget *g_cogExtrude = NULL, *g_cogNotch = NULL, *g_cogInfo = NULL;
@@ -1332,6 +1333,10 @@ static void CogPanelApply(){
 	r.hole = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogBand ) );
 	r.cone = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogCone ) );
 	r.cone2 = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogCone2 ) );
+	r.socket = gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_cogSocket ) ) ? 1 : 0;
+	r.outerR = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogOuter ) );
+	r.clear = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogClear ) );
+	r.floorT = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogFloor ) );
 	{
 		const int sn = gtk_combo_box_get_active( GTK_COMBO_BOX( g_cogSnap ) );
 		r.snap = ( sn >= 0 && sn < 5 ) ? g_cogSnapSteps[sn] : 0.0f;
@@ -1441,6 +1446,14 @@ static void CogPanelBuild(){
 	g_cogBand = CogSpin( vbox, _( "Hole radius" ), 0, 4096, 1, 2, _( "A hole through the middle of this radius, for a tube or axle. 0 leaves the cog solid" ) );
 	g_cogCone = CogSpin( vbox, _( "Centre offset, top" ), -4096, 4096, 1, 2, _( "How much higher (positive) or lower (negative) the middle of the top end (the +axis side) is than its edge. From the middle (or the edge of the hole) out to the tips of the teeth the end slopes in a straight line. 0 leaves the end flat" ) );
 	g_cogCone2 = CogSpin( vbox, _( "Centre offset, bottom" ), -4096, 4096, 1, 2, _( "The same for the bottom end (the other side of the cog)" ) );
+	g_cogSocket = gtk_check_button_new_with_label( _( "Socket (cog-shaped hole)" ) );
+	gtk_widget_set_tooltip_text( g_cogSocket, _( "Make a block with the cog as a hole through it instead of the cog: a cog made with the same numbers fits inside" ) );
+	gtk_box_pack_start( GTK_BOX( vbox ), g_cogSocket, FALSE, FALSE, 0 );
+	gtk_widget_show( g_cogSocket );
+	g_signal_connect( G_OBJECT( g_cogSocket ), "toggled", G_CALLBACK( OnCogChanged ), NULL );
+	g_cogOuter = CogSpin( vbox, _( "Block radius" ), 1, 8192, 1, 2, _( "Socket only: the radius of the block round the hole. It has a corner on every tip corner of the hole, two sides to a tooth" ) );
+	g_cogClear = CogSpin( vbox, _( "Clearance" ), 0, 1024, 0.25, 2, _( "Socket only: how much wider than the cog the hole is, all round, so the cog turns freely" ) );
+	g_cogFloor = CogSpin( vbox, _( "Floor thickness" ), 0, 8192, 1, 2, _( "Socket only: 0 leaves the hole open right through. More than 0 makes a pocket, open at the top, with a floor under the pocket, this thick: the pocket is as deep as the cog is long, and the block ends this far below its bottom. The floor is built like the end of a cog (a centre fan and a plane for the bottom of every tooth); the top and bottom offsets slope the floor and the underside of the block" ) );
 	gtk_spin_button_set_snap_to_ticks( GTK_SPIN_BUTTON( g_cogTipW ), TRUE );
 	{
 		GtkWidget *sh = gtk_hbox_new( FALSE, 6 );
@@ -1510,6 +1523,10 @@ static void CogPanelFill( const cogRec_t &r ){
 	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogBand ), r.hole );
 	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogCone ), r.cone );
 	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogCone2 ), r.cone2 );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogOuter ), r.outerR );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogClear ), r.clear );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogFloor ), r.floorT );
+	gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( g_cogSocket ), r.socket != 0 );
 	{
 		int at = 0;
 		for ( int i = 1; i < 5; i++ )
@@ -1583,8 +1600,137 @@ static gboolean CogPanelTick( gpointer data ){
 	return TRUE;
 }
 
+// Floating window for a cone (a segmented cap): shows up by itself while one is selected and sets the height of its
+// tip over the plane of its ring. The half-way row follows, half way up.
+static GtkWidget *g_conePanel = NULL, *g_coneHeight = NULL;
+static bool g_coneListen = false;
+static const void *g_coneShown = NULL;
+static int g_coneX = -1, g_coneY = -1;
+static guint g_conePending = 0;
+
+static gboolean ConePanelDeferred( gpointer data ){
+	g_conePending = 0;
+	if ( g_coneListen ) {
+		Cone_SetHeight( (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_coneHeight ) ) );
+	}
+	return FALSE;
+}
+
+static void OnConeChanged( GtkWidget *widget, gpointer data ){
+	if ( !g_coneListen ) {
+		return;
+	}
+	if ( g_conePending ) {
+		g_source_remove( g_conePending );
+	}
+	g_conePending = g_timeout_add( 80, ConePanelDeferred, NULL );
+}
+
+static gboolean OnConeEnter( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	gtk_window_set_accept_focus( GTK_WINDOW( g_conePanel ), TRUE );
+	return FALSE;
+}
+
+static gboolean OnConeLeave( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	if ( event->detail == GDK_NOTIFY_INFERIOR ) {
+		return FALSE;
+	}
+	if ( gtk_window_is_active( GTK_WINDOW( g_conePanel ) ) ) {
+		gtk_window_present( GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	}
+	gtk_window_set_accept_focus( GTK_WINDOW( g_conePanel ), FALSE );
+	return FALSE;
+}
+
+static void ConePanelBuild(){
+	g_conePanel = gtk_window_new( GTK_WINDOW_TOPLEVEL );
+	gtk_window_set_title( GTK_WINDOW( g_conePanel ), _( "Cone" ) );
+	gtk_window_set_transient_for( GTK_WINDOW( g_conePanel ), GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	gtk_window_set_type_hint( GTK_WINDOW( g_conePanel ), GDK_WINDOW_TYPE_HINT_UTILITY );
+	gtk_window_set_skip_taskbar_hint( GTK_WINDOW( g_conePanel ), TRUE );
+	gtk_window_set_focus_on_map( GTK_WINDOW( g_conePanel ), FALSE );
+	gtk_window_set_accept_focus( GTK_WINDOW( g_conePanel ), FALSE );
+	gtk_window_set_resizable( GTK_WINDOW( g_conePanel ), FALSE );
+	gtk_window_set_deletable( GTK_WINDOW( g_conePanel ), FALSE );
+
+	GtkWidget *hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_container_set_border_width( GTK_CONTAINER( hbox ), 6 );
+	gtk_container_add( GTK_CONTAINER( g_conePanel ), hbox );
+	gtk_widget_show( hbox );
+	GtkWidget *l = gtk_label_new( _( "Cone height" ) );
+	gtk_misc_set_alignment( GTK_MISC( l ), 0.0, 0.5 );
+	gtk_box_pack_start( GTK_BOX( hbox ), l, FALSE, FALSE, 0 );
+	gtk_widget_show( l );
+	g_coneHeight = gtk_spin_button_new( GTK_ADJUSTMENT( gtk_adjustment_new( 0, -8192, 8192, 1, 8, 0 ) ), 1, 2 );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( g_coneHeight ), TRUE );
+	gtk_widget_set_tooltip_text( g_coneHeight, _( "How high the tip is over the plane of the ring, in units. Positive raises it on the side the patch faces (outwards for a cap made with Cap Segmented), negative sinks it. 0 is a flat cap. The half-way points follow, half way up, so the sides stay straight" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_coneHeight, TRUE, TRUE, 0 );
+	gtk_widget_show( g_coneHeight );
+	g_signal_connect( G_OBJECT( g_coneHeight ), "value-changed", G_CALLBACK( OnConeChanged ), NULL );
+	gtk_widget_add_events( g_conePanel, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK );
+	g_signal_connect( G_OBJECT( g_conePanel ), "enter-notify-event", G_CALLBACK( OnConeEnter ), NULL );
+	g_signal_connect( G_OBJECT( g_conePanel ), "leave-notify-event", G_CALLBACK( OnConeLeave ), NULL );
+}
+
+static gboolean ConePanelTick( gpointer data ){
+	if ( g_pParentWnd == NULL || g_pParentWnd->m_pWidget == NULL ) {
+		return TRUE;
+	}
+	float h = 0;
+	const void *who = NULL;
+	const bool have = Cone_Selected( &h, &who );
+	if ( have && g_conePanel == NULL ) {
+		ConePanelBuild();
+	}
+	if ( g_conePanel == NULL ) {
+		return TRUE;
+	}
+	if ( have ) {
+		if ( who != g_coneShown ) {
+			g_coneListen = false;
+			gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_coneHeight ), h );
+			g_coneListen = true;
+			g_coneShown = who;
+		}
+		if ( !gtk_widget_get_visible( g_conePanel ) ) {
+			if ( g_coneX < 0 ) {
+				GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
+				GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
+				if ( gw ) {
+					gint ox = 0, oy = 0;
+					GtkAllocation a;
+					gdk_window_get_origin( gw, &ox, &oy );
+					gtk_widget_get_allocation( grid, &a );
+					g_coneX = ox + a.width - 300;
+					g_coneY = oy + 40;
+				}
+				else
+				{
+					gint mx = 0, my = 0, mw = 0, mh = 0;
+					gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
+					gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
+					g_coneX = mx + mw - 320;
+					g_coneY = my + 140;
+				}
+			}
+			gtk_window_move( GTK_WINDOW( g_conePanel ), g_coneX, g_coneY );
+			gtk_widget_show( g_conePanel );
+		}
+	}
+	else
+	{
+		g_coneShown = NULL;
+		if ( gtk_widget_get_visible( g_conePanel ) ) {
+			gtk_window_get_position( GTK_WINDOW( g_conePanel ), &g_coneX, &g_coneY );
+			gtk_widget_hide( g_conePanel );
+		}
+	}
+	return TRUE;
+}
+
 void SegPanel_Init(){
 	g_timeout_add( 150, SegPanelTick, NULL );
 	g_timeout_add( 150, BevelPanelTick, NULL );
 	g_timeout_add( 150, CogPanelTick, NULL );
+	g_timeout_add( 150, ConePanelTick, NULL );
 }

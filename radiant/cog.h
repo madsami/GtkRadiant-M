@@ -45,6 +45,11 @@ struct cogRec_t
 	// hole) out to the tips of the teeth the cap runs in a fixed slope, at both ends of the cog
 	float cone;             // the end on the +axis side
 	float cone2;            // the end on the other side
+	// a socket: the block round a cog-shaped hole (the profile, with clearance added to its radii, is the hole)
+	int socket;
+	float outerR;           // radius of the block (a regular polygon with two sides to a tooth)
+	float clear;            // how much wider than the cog it was made from the hole is, all round
+	float floorT;           // 0: the hole goes right through; else a pocket, with a floor this far above the bottom of the block
 };
 
 void Cog_Pack( const cogRec_t &r, float *out );             // out: COG_NPARAM floats
@@ -61,6 +66,16 @@ bool Cog_Selected( cogRec_t *out, int *id );
 // Select every patch of the cog(s) that have a patch selected (and the bevel strips made on them), so a whole
 // cog can be moved from a single picked face. Returns how many patches were added to the selection.
 int Cog_SelectWhole();
+
+// Cap Segmented: a cone-shaped segmented patch (a fan to the middle) on every open end of the selected
+// segmented cylinders (or just the higher / lower one); the caps are independent of the cylinders.
+bool Cog_CapSegmented( int which ); // which: 0 both ends, 1 the higher end only, 2 the lower end only
+
+// Cone height: the first selected cone (a segmented patch of three rows with a ring at one end and a point at the
+// other) reports the height of its tip over the plane of the ring, positive on the side it faces. Setting it moves
+// the tip of every selected cone and keeps the half-way row half way up.
+bool Cone_Selected( float *height, const void **who );
+bool Cone_SetHeight( float h );
 
 // Make the selected cog again with other numbers (its patches are replaced, with one undo step).
 bool Cog_Rebuild( const cogRec_t &r );

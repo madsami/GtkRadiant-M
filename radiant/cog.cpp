@@ -7,8 +7,10 @@
 #include <math.h>
 #include "cog.h"
 #include "bevel.h"
+#include "segpatch.h"
 
 void WINAPI Patch_Naturalize( patchMesh_t *p );
+void Brush_RebuildBrush( brush_t *b, vec3_t vMins, vec3_t vMaxs );
 
 #define COG_PI 3.14159265358979f
 #define COG_MIN_TEETH 3
@@ -52,6 +54,10 @@ void Cog_Pack( const cogRec_t &r, float *o ){
 	o[n++] = (float)r.rimSub;
 	o[n++] = r.cone;
 	o[n++] = r.cone2;
+	o[n++] = (float)r.socket;
+	o[n++] = r.outerR;
+	o[n++] = r.clear;
+	o[n++] = r.floorT;
 }
 
 void Cog_Unpack( const float *in, cogRec_t &r ){
@@ -84,6 +90,19 @@ void Cog_Unpack( const float *in, cogRec_t &r ){
 	r.cone2 = in[n++];
 	if ( !( r.cone2 > -1e6f && r.cone2 < 1e6f ) ) {
 		r.cone2 = 0;
+	}
+	r.socket = in[n++] > 0.5f ? 1 : 0;
+	r.outerR = in[n++];
+	r.clear = in[n++];
+	r.floorT = in[n++];
+	if ( !( r.floorT >= 0.0f && r.floorT < 1e6f ) ) {
+		r.floorT = 0;
+	}
+	if ( !( r.outerR > 0.0f && r.outerR < 1e6f ) ) {
+		r.outerR = 1.6f * r.cylR; // cogs saved before sockets
+	}
+	if ( !( r.clear >= 0.0f && r.clear < 1e4f ) ) {
+		r.clear = 0;
 	}
 	if ( !( r.snap >= 0.0f && r.snap <= 16.0f ) ) {
 		r.snap = 0;
@@ -128,6 +147,11 @@ static bool Cog_Shape( const cogRec_t &r, cogShape_t &s ){
 		s.rTip = r.cylR;
 		s.rRoot = r.cylR - r.depth;
 	}
+	if ( r.socket ) {
+		if ( r.clear < 0.0f || r.clear > 1e4f ) {
+			return false;
+		}
+	}
 	if ( s.rRoot < 1.0f ) {
 		return false;
 	}
@@ -160,6 +184,37 @@ static bool Cog_Shape( const cogRec_t &r, cogShape_t &s ){
 		}
 	}
 
+	// A socket's hole is the profile moved outwards by the clearance all round: every edge (the tips, the flanks of
+	// the teeth, the root between them) moves away from the axis by the clearance, and every corner to where the two
+	// moved edges meet. A cog with the same numbers fits inside with that much room on every side.
+	if ( r.socket && r.clear > 0.0f ) {
+		std::vector<float> nx( n ), ny( n );
+		for ( int i = 0; i < n; i++ )
+		{
+			const int p = ( i + n - 1 ) % n, q = ( i + 1 ) % n;
+			float d0x = s.vx[i] - s.vx[p], d0y = s.vy[i] - s.vy[p];
+			float d1x = s.vx[q] - s.vx[i], d1y = s.vy[q] - s.vy[i];
+			const float l0 = sqrtf( d0x * d0x + d0y * d0y ), l1 = sqrtf( d1x * d1x + d1y * d1y );
+			if ( l0 < 1e-4f || l1 < 1e-4f ) {
+				return false;
+			}
+			const float n0x = d0y / l0, n0y = -d0x / l0, n1x = d1y / l1, n1y = -d1x / l1; // outwards (the profile runs counter-clockwise)
+			const float den = 1.0f + n0x * n1x + n0y * n1y;
+			if ( den < 0.2f ) {
+				return false;
+			}
+			nx[i] = r.clear * ( n0x + n1x ) / den;
+			ny[i] = r.clear * ( n0y + n1y ) / den;
+		}
+		for ( int i = 0; i < n; i++ )
+		{
+			s.vx[i] += nx[i];
+			s.vy[i] += ny[i];
+		}
+		s.rTip = sqrtf( s.vx[0] * s.vx[0] + s.vy[0] * s.vy[0] );
+		s.rRoot = sqrtf( s.vx[2] * s.vx[2] + s.vy[2] * s.vy[2] );
+	}
+
 	s.cx.resize( n );
 	s.cy.resize( n );
 	for ( int i = 0; i < n; i++ )
@@ -190,6 +245,26 @@ static bool Cog_Shape( const cogRec_t &r, cogShape_t &s ){
 	// A hole must stay inside the root polygon, whose nearest edges are the flat chords at the base of a tooth
 	// and across a gap (both the same distance from the middle).
 	s.maxHole = s.rRoot * cosf( ar ) - 1.0f;
+	if ( r.socket ) {
+		// the block round the hole must reach beyond the tips
+		if ( r.outerR < s.rTip + 1.0f ) {
+			return false;
+		}
+		if ( r.floorT > 0.0f ) {
+			// a floor: it must stay clear of the top and of the underside everywhere (both heights change in a straight
+			// line with the distance from the axis, so the middle and the tips are enough)
+			const float hz = 0.5f * r.height;
+			const float fz0 = -hz + r.cone, fzt = -hz; // the floor is where the end of the cog that fits would be
+			if ( fz0 > hz - 0.25f || fzt > hz - 0.25f ) {
+				return false;
+			}
+			const float uz0 = -hz - r.floorT - r.cone2, uzt = -hz - r.floorT - r.cone2 * ( 1.0f - s.rTip / r.outerR );
+			if ( fz0 < uz0 + 0.25f || fzt < uzt + 0.25f ) {
+				return false;
+			}
+		}
+		return true; // no bore in a socket
+	}
 	if ( r.hole > 0 && ( r.hole < 0.25f || r.hole > s.maxHole ) ) {
 		return false;
 	}
@@ -209,6 +284,9 @@ static bool Cog_Shape( const cogRec_t &r, cogShape_t &s ){
 // tips of the teeth. Used for the points the surface passes through; the control point between two of them is put
 // half way between their heights, so it lies on the straight line between them.
 static float Cog_CapZ( const cogRec_t &r, const cogShape_t &s, int cap, float x, float y ){
+	if ( r.socket ) {
+		return 0.5f * r.height;
+	}
 	const float d = sqrtf( x * x + y * y );
 	return 0.5f * r.height + ( cap == 0 ? r.cone : r.cone2 ) * ( 1.0f - d / s.rTip );
 }
@@ -225,6 +303,11 @@ void Cog_Describe( const cogRec_t &r, char *text, int len ){
 		{
 			_snprintf( text, len, "These numbers do not make a cog (too many teeth, too deep or too narrow, or the dip of the ends is too deep for the length)" );
 		}
+		text[len - 1] = 0;
+		return;
+	}
+	if ( r.socket ) {
+		_snprintf( text, len, "Socket: %d teeth, %d patches. The hole is %.1f at the tips and %.1f at the root (clearance included); a cog with the same numbers fits it", r.teeth, ( r.floorT > 0 ? 14 : 12 ) * r.teeth, s.rTip, s.rRoot );
 		text[len - 1] = 0;
 		return;
 	}
@@ -417,6 +500,197 @@ static void Cog_HoleMid( float ax, float ay, float bx, float by, float *ox, floa
 	*oy = 0.5f * ( ay + by );
 }
 
+// A socket: a block with a cog-shaped hole (the profile with the clearance added to its radii), through the block or,
+// with a floor, a pocket that is open at the top.
+//
+// The outside is a polygon with a corner on every tip corner of the profile (at the angle of the corner, on the
+// circle of the block radius): two sides to a tooth, one across the tip of the tooth and one across the material
+// between two teeth. The top face is three pieces to a tooth, none of them thin:
+//   - T: from the tip of the pocket out to the outside
+//   - Q: the material between two pockets, from the root of the gap out to the line between the pocket tips
+//   - R: from that line out to the outside
+// With no floor the bottom face is the same, and the hole is cut right through. With a floor the pocket is closed
+// the way the end of a cog is: a fan from the middle to the root polygon and a plane of its own for the bottom of
+// every tooth pocket, joined to the pocket walls (the walls of the profile) and not to the outside. The block has an
+// underside of its own, a fan from the middle to the outside. The top offset slopes the floor, the bottom offset the
+// underside (see Cog_FloorZ and Cog_UnderZ).
+static float Cog_FloorZ( const cogRec_t &r, const cogShape_t &s, float x, float y ){
+	const float d = sqrtf( x * x + y * y );
+	return -0.5f * r.height + r.cone * ( 1.0f - d / s.rTip );
+}
+
+static float Cog_UnderZ( const cogRec_t &r, float x, float y ){
+	const float d = sqrtf( x * x + y * y );
+	return -0.5f * r.height - r.floorT - r.cone2 * ( 1.0f - d / r.outerR );
+}
+
+// a row of three points of a piece: from (x0, y0, z0) through the control point to (x1, y1, z1)
+static void Cog_Row3( const cogGen_t &g, float x0, float y0, float z0, float xm, float ym, float zm, float x1, float y1, float z1, float row[3][3] ){
+	Cog_Lift( g, x0, y0, z0, row[0] );
+	Cog_Lift( g, xm, ym, zm, row[1] );
+	Cog_Lift( g, x1, y1, z1, row[2] );
+}
+
+// a flat piece between two rows (the points between the rows are halfway)
+static void Cog_Piece( cogGen_t &g, const float *want, int code, float a0[3][3], float a2[3][3] ){
+	patchMesh_t *p = Cog_NewPatch( g, 3, 3 );
+	p->cog[COG_PARTSLOT] = (float)code;
+	for ( int a = 0; a < 3; a++ )
+	{
+		VectorCopy( a0[a], p->ctrl[a][0].xyz );
+		VectorCopy( a2[a], p->ctrl[a][2].xyz );
+		for ( int k = 0; k < 3; k++ )
+			p->ctrl[a][1].xyz[k] = 0.5f * ( a0[a][k] + a2[a][k] );
+	}
+	Cog_Finish( g, p, want, true );
+}
+
+// a wall: three points along the edge, the top and the bottom of each (the middle row is halfway)
+static void Cog_Wall3( cogGen_t &g, const float *want, const float *px, const float *py, const float *zt, const float *zb ){
+	patchMesh_t *p = Cog_NewPatch( g, 3, 3 );
+	for ( int a = 0; a < 3; a++ )
+	{
+		Cog_Lift( g, px[a], py[a], zt[a], p->ctrl[a][0].xyz );
+		Cog_Lift( g, px[a], py[a], 0.5f * ( zt[a] + zb[a] ), p->ctrl[a][1].xyz );
+		Cog_Lift( g, px[a], py[a], zb[a], p->ctrl[a][2].xyz );
+	}
+	Cog_Finish( g, p, want, false );
+}
+
+static void Cog_GenSocket( cogGen_t &g, const cogRec_t &r, const cogShape_t &s ){
+	const int n = s.n;
+	const int N = r.teeth;
+	const float hz = 0.5f * r.height;
+	const bool floor = r.floorT > 0.0f;
+	float want[3];
+
+	// the outside: a point at the angle of every tip corner (vertex 4k and 4k + 1)
+	std::vector<float> ox( n, 0.0f ), oy( n, 0.0f );
+	for ( int k = 0; k < N; k++ )
+		for ( int m = 0; m < 2; m++ )
+		{
+			const int i = 4 * k + m;
+			const float phi = atan2f( s.vy[i], s.vx[i] );
+			ox[i] = r.outerR * cosf( phi );
+			oy[i] = r.outerR * sinf( phi );
+		}
+
+	// the walls of the pocket: one for every edge of the profile, facing the axis
+	for ( int i = 0; i < n; i++ )
+	{
+		const int j = ( i + 1 ) % n;
+		const float px[3] = { s.vx[i], s.cx[i], s.vx[j] };
+		const float py[3] = { s.vy[i], s.cy[i], s.vy[j] };
+		float zt[3] = { hz, hz, hz }, zb[3];
+		if ( floor ) {
+			zb[0] = Cog_FloorZ( r, s, px[0], py[0] );
+			zb[2] = Cog_FloorZ( r, s, px[2], py[2] );
+			zb[1] = 0.5f * ( zb[0] + zb[2] );
+		}
+		else
+		{
+			zb[0] = zb[1] = zb[2] = -hz;
+		}
+		Cog_Dir( g, -( s.vy[j] - s.vy[i] ), s.vx[j] - s.vx[i], want );
+		Cog_Wall3( g, want, px, py, zt, zb );
+	}
+	// the walls of the outside: one across the tip of every tooth and one between two teeth
+	for ( int k = 0; k < N; k++ )
+		for ( int e = 0; e < 2; e++ )
+		{
+			const int i = 4 * k + e;
+			const int j = e == 0 ? 4 * k + 1 : ( 4 * k + 4 ) % n;
+			const float px[3] = { ox[i], 0.5f * ( ox[i] + ox[j] ), ox[j] };
+			const float py[3] = { oy[i], 0.5f * ( oy[i] + oy[j] ), oy[j] };
+			const float zbo = floor ? -hz - r.floorT : -hz;
+			const float zt[3] = { hz, hz, hz }, zb[3] = { zbo, zbo, zbo };
+			Cog_Dir( g, oy[j] - oy[i], -( ox[j] - ox[i] ), want );
+			Cog_Wall3( g, want, px, py, zt, zb );
+		}
+
+	// the face with the opening: the top, and with no floor the bottom too
+	for ( int cap = 0; cap < ( floor ? 1 : 2 ); cap++ )
+	{
+		const float z = cap == 0 ? hz : -hz;
+		for ( int k = 0; k < 3; k++ )
+			want[k] = cap == 0 ? r.A[k] : -r.A[k];
+		for ( int k = 0; k < N; k++ )
+		{
+			const int tl = 4 * k, tr = 4 * k + 1, br = 4 * k + 2, bn = 4 * k + 3, tn = ( 4 * k + 4 ) % n;
+			float a0[3][3], a2[3][3];
+			// T: the pocket's tip out to the outside
+			Cog_Row3( g, s.vx[tl], s.vy[tl], z, s.cx[tl], s.cy[tl], z, s.vx[tr], s.vy[tr], z, a0 );
+			Cog_Row3( g, ox[tl], oy[tl], z, 0.5f * ( ox[tl] + ox[tr] ), 0.5f * ( oy[tl] + oy[tr] ), z, ox[tr], oy[tr], z, a2 );
+			Cog_Piece( g, want, 1000 + cap * 100 + k, a0, a2 );
+			// Q: the material between this pocket and the next, from the root of the gap to the line between the tips
+			Cog_Row3( g, s.vx[br], s.vy[br], z, s.cx[br], s.cy[br], z, s.vx[bn], s.vy[bn], z, a0 );
+			Cog_Row3( g, s.vx[tr], s.vy[tr], z, 0.5f * ( s.vx[tr] + s.vx[tn] ), 0.5f * ( s.vy[tr] + s.vy[tn] ), z, s.vx[tn], s.vy[tn], z, a2 );
+			Cog_Piece( g, want, 10 + cap, a0, a2 );
+			// R: from that line out to the outside
+			Cog_Row3( g, s.vx[tr], s.vy[tr], z, 0.5f * ( s.vx[tr] + s.vx[tn] ), 0.5f * ( s.vy[tr] + s.vy[tn] ), z, s.vx[tn], s.vy[tn], z, a0 );
+			Cog_Row3( g, ox[tr], oy[tr], z, 0.5f * ( ox[tr] + ox[tn] ), 0.5f * ( oy[tr] + oy[tn] ), z, ox[tn], oy[tn], z, a2 );
+			Cog_Piece( g, want, 10 + cap, a0, a2 );
+		}
+	}
+	if ( !floor ) {
+		return;
+	}
+
+	// the underside: a fan from the middle to every side of the outside
+	for ( int k = 0; k < 3; k++ )
+		want[k] = -r.A[k];
+	for ( int k = 0; k < N; k++ )
+		for ( int e = 0; e < 2; e++ )
+		{
+			const int i = 4 * k + e;
+			const int j = e == 0 ? 4 * k + 1 : ( 4 * k + 4 ) % n;
+			float a0[3][3], a2[3][3];
+			const float zc = Cog_UnderZ( r, 0.0f, 0.0f ), zo = Cog_UnderZ( r, ox[i], oy[i] );
+			Cog_Row3( g, 0.0f, 0.0f, zc, 0.0f, 0.0f, zc, 0.0f, 0.0f, zc, a0 );
+			Cog_Row3( g, ox[i], oy[i], zo, 0.5f * ( ox[i] + ox[j] ), 0.5f * ( oy[i] + oy[j] ), zo, ox[j], oy[j], zo, a2 );
+			Cog_Piece( g, want, 11, a0, a2 );
+		}
+
+	// the floor of the pocket, built as the end of a cog is: the top of every tooth, and a fan from the middle to
+	// the root polygon (the base of every tooth and every gap)
+	for ( int k = 0; k < 3; k++ )
+		want[k] = r.A[k];
+	for ( int k = 0; k < N; k++ )
+	{
+		const int bl = ( 4 * k + n - 1 ) % n, tl = 4 * k, tr = 4 * k + 1, br = 4 * k + 2;
+		const float zbl = Cog_FloorZ( r, s, s.vx[bl], s.vy[bl] ), zbr = Cog_FloorZ( r, s, s.vx[br], s.vy[br] );
+		const float ztl = Cog_FloorZ( r, s, s.vx[tl], s.vy[tl] ), ztr = Cog_FloorZ( r, s, s.vx[tr], s.vy[tr] );
+		patchMesh_t *p = Cog_NewPatch( g, 3, 3 );
+		p->cog[COG_PARTSLOT] = (float)( 1000 + k );
+		Cog_Lift( g, s.vx[bl], s.vy[bl], zbl, p->ctrl[0][0].xyz );
+		Cog_Lift( g, s.vx[br], s.vy[br], zbr, p->ctrl[2][0].xyz );
+		Cog_Lift( g, s.vx[tl], s.vy[tl], ztl, p->ctrl[0][2].xyz );
+		Cog_Lift( g, s.vx[tr], s.vy[tr], ztr, p->ctrl[2][2].xyz );
+		Cog_Lift( g, 0.5f * ( s.vx[bl] + s.vx[br] ), 0.5f * ( s.vy[bl] + s.vy[br] ), 0.5f * ( zbl + zbr ), p->ctrl[1][0].xyz );
+		Cog_Lift( g, s.cx[tl], s.cy[tl], 0.5f * ( ztl + ztr ), p->ctrl[1][2].xyz );
+		Cog_Lift( g, 0.5f * ( s.vx[bl] + s.vx[tl] ), 0.5f * ( s.vy[bl] + s.vy[tl] ), 0.5f * ( zbl + ztl ), p->ctrl[0][1].xyz );
+		Cog_Lift( g, 0.5f * ( s.vx[br] + s.vx[tr] ), 0.5f * ( s.vy[br] + s.vy[tr] ), 0.5f * ( zbr + ztr ), p->ctrl[2][1].xyz );
+		for ( int k3 = 0; k3 < 3; k3++ )
+			p->ctrl[1][1].xyz[k3] = 0.5f * ( p->ctrl[1][0].xyz[k3] + p->ctrl[1][2].xyz[k3] );
+		Cog_Finish( g, p, want, true );
+	}
+	for ( int k = 0; k < N; k++ )
+		for ( int e = 0; e < 2; e++ )
+		{
+			// e 0: the base of tooth k, e 1: the gap after it
+			const int a = e == 0 ? ( 4 * k + n - 1 ) % n : 4 * k + 2;
+			const int b = e == 0 ? 4 * k + 2 : 4 * k + 3;
+			const float cx = e == 0 ? 0.5f * ( s.vx[a] + s.vx[b] ) : s.cx[a];
+			const float cy = e == 0 ? 0.5f * ( s.vy[a] + s.vy[b] ) : s.cy[a];
+			const float za = Cog_FloorZ( r, s, s.vx[a], s.vy[a] ), zb2 = Cog_FloorZ( r, s, s.vx[b], s.vy[b] );
+			const float zc = Cog_FloorZ( r, s, 0.0f, 0.0f );
+			float a0[3][3], a2[3][3];
+			Cog_Row3( g, 0.0f, 0.0f, zc, 0.0f, 0.0f, zc, 0.0f, 0.0f, zc, a0 );
+			Cog_Row3( g, s.vx[a], s.vy[a], za, cx, cy, 0.5f * ( za + zb2 ), s.vx[b], s.vy[b], zb2, a2 );
+			Cog_Piece( g, want, 10, a0, a2 );
+		}
+}
+
 // The patches of the cog, all linked into owner. Needs an open undo step. Returns how many.
 static int Cog_Generate( const cogRec_t &r, int id, IShader *shader, entity_t *owner, std::vector<brush_t*> &made ){
 	cogShape_t s;
@@ -435,6 +709,11 @@ static int Cog_Generate( const cogRec_t &r, int id, IShader *shader, entity_t *o
 
 	const int n = s.n;
 	const int N = r.teeth;
+	if ( r.socket ) {
+		Cog_GenSocket( g, r, s );
+		made = g.made;
+		return (int)made.size();
+	}
 	const bool hollow = r.hole > 0;
 	float want[3];
 
@@ -632,6 +911,8 @@ bool Cog_Selected( cogRec_t *out, int *id ){
 	Cog_Collect( cid, all );
 
 	bool framed = false;
+	float axisPtG[3] = { 0, 0, 0 };
+	bool haveAxisPt = false;
 	// Where the cog points now, if it was rotated after it was made. The pieces of a cap are the same all the way
 	// round the axis, so the middle of all the points of one cap is on the axis: the axis runs from the bottom cap to
 	// the top one. The direction of tooth 0 is the one from the axis to the middle of the top of tooth 0 (the patches
@@ -671,23 +952,49 @@ bool Cog_Selected( cogRec_t *out, int *id ){
 				d[k] = (float)( cs[0][k] / cn[0] - cs[1][k] / cn[1] );
 			if ( VectorLength( d ) > 0.5f ) {
 				VectorScale( d, 1.0f / VectorLength( d ), u );
+				for ( int k = 0; k < 3; k++ )
+					axisPtG[k] = (float)( cs[0][k] / cn[0] );
+				haveAxisPt = true;
 				// the direction of tooth 0, across the new axis
 				float e[3] = { 0, 0, 0 };
 				bool haveE = false;
 				if ( tooth0 ) {
-					double ms[3] = { 0, 0, 0 };
-					for ( int a = 0; a < 3; a++ )
-						for ( int b = 0; b < 3; b++ )
-							for ( int k = 0; k < 3; k++ )
-								ms[k] += tooth0->ctrl[a][b].xyz[k] / 9.0;
+					// every tooth says where tooth 0 is (turned back by its number of pitches), and the answers are
+					// added, so that rounding of single points does not turn the cog a little more at every change
 					float axisPt[3];
 					for ( int k = 0; k < 3; k++ )
 						axisPt[k] = (float)( cs[0][k] / cn[0] );
-					for ( int k = 0; k < 3; k++ )
-						e[k] = (float)ms[k] - axisPt[k];
-					const float al = DotProduct( e, u );
-					for ( int k = 0; k < 3; k++ )
-						e[k] -= al * u[k];
+					const float pitch = 2.0f * COG_PI / (float)( r.teeth > 0 ? r.teeth : 1 );
+					for ( size_t i = 0; i < all.size(); i++ )
+					{
+						const patchMesh_t *p = all[i]->pPatch;
+						const int code = (int)( p->cog[COG_PARTSLOT] + 0.5f );
+						if ( code < 1000 || code >= 1100 ) {
+							continue;
+						}
+						double ms[3] = { 0, 0, 0 };
+						for ( int a = 0; a < 3; a++ )
+							for ( int b = 0; b < 3; b++ )
+								for ( int k = 0; k < 3; k++ )
+									ms[k] += p->ctrl[a][b].xyz[k] / 9.0;
+						float v[3];
+						for ( int k = 0; k < 3; k++ )
+							v[k] = (float)ms[k] - axisPt[k];
+						const float al = DotProduct( v, u );
+						for ( int k = 0; k < 3; k++ )
+							v[k] -= al * u[k];
+						const float vl = VectorLength( v );
+						if ( vl < 0.1f ) {
+							continue;
+						}
+						VectorScale( v, 1.0f / vl, v );
+						// turn it back by (code - 1000) pitches about the axis
+						const float ph = -( code - 1000 ) * pitch;
+						float uxv[3];
+						CrossProduct( u, v, uxv );
+						for ( int k = 0; k < 3; k++ )
+							e[k] += v[k] * cosf( ph ) + uxv[k] * sinf( ph );
+					}
 					haveE = VectorLength( e ) > 0.1f;
 				}
 				if ( !haveE ) {
@@ -698,8 +1005,13 @@ bool Cog_Selected( cogRec_t *out, int *id ){
 				}
 				if ( haveE ) {
 					VectorScale( e, 1.0f / VectorLength( e ), e );
-					VectorCopy( u, r.A );
-					VectorCopy( e, r.E1 );
+					// the frame the cog was made in is kept unless the cog was really turned (within 1.5 degrees it is the
+					// same cog: the points were rounded to the grid, and a frame taken from them would drift at every change)
+					const float tolCos = 0.99966f;
+					if ( !( DotProduct( u, r.A ) > tolCos && DotProduct( e, r.E1 ) > tolCos ) ) {
+						VectorCopy( u, r.A );
+						VectorCopy( e, r.E1 );
+					}
 					framed = tooth0 != NULL;
 				}
 			}
@@ -824,6 +1136,31 @@ bool Cog_Selected( cogRec_t *out, int *id ){
 	// where it is now, if it was moved after it was made. If no wall is found (turned by hand) all points are used.
 	double sum[3] = { 0, 0, 0 };
 	long count = 0;
+	// Only the walls furthest from the axis (the tips of a cog, the outside of a socket) have their middle row half way
+	// along the axis; the walls of a pocket with a floor end at the floor.
+	float maxWallDist = 0;
+	if ( haveAxisPt ) {
+		for ( size_t i = 0; i < all.size(); i++ )
+		{
+			const patchMesh_t *p = all[i]->pPatch;
+			if ( p->width != 3 || p->height != 3 ) {
+				continue;
+			}
+			float m[3];
+			VectorSubtract( p->ctrl[1][1].xyz, axisPtG, m );
+			const float al = DotProduct( m, r.A );
+			for ( int k = 0; k < 3; k++ )
+				m[k] -= al * r.A[k];
+			const float dv = VectorLength( m );
+			// (only the walls: their columns run along the axis)
+			float c[3];
+			VectorSubtract( p->ctrl[1][2].xyz, p->ctrl[1][0].xyz, c );
+			const float cl = VectorLength( c );
+			if ( cl > 0.5f && fabsf( DotProduct( c, r.A ) ) > 0.99f * cl && dv > maxWallDist ) {
+				maxWallDist = dv;
+			}
+		}
+	}
 	for ( int pass = 0; pass < 2 && count == 0; pass++ )
 		for ( size_t i = 0; i < all.size(); i++ )
 		{
@@ -837,6 +1174,14 @@ bool Cog_Selected( cogRec_t *out, int *id ){
 					VectorSubtract( p->ctrl[a][2].xyz, p->ctrl[a][0].xyz, d );
 					const float l = VectorLength( d );
 					wall = l > 0.5f && fabsf( DotProduct( d, r.A ) ) > 0.99f * l;
+				}
+				if ( wall && maxWallDist > 0 ) {
+					float m[3];
+					VectorSubtract( p->ctrl[1][1].xyz, axisPtG, m );
+					const float al = DotProduct( m, r.A );
+					for ( int k = 0; k < 3; k++ )
+						m[k] -= al * r.A[k];
+					wall = VectorLength( m ) >= 0.95f * maxWallDist;
 				}
 			}
 			if ( !wall ) {
@@ -855,6 +1200,12 @@ bool Cog_Selected( cogRec_t *out, int *id ){
 		}
 	if ( count > 0 ) {
 		float mid[3] = { (float)( sum[0] / count ), (float)( sum[1] / count ), (float)( sum[2] / count ) };
+		if ( r.socket && r.floorT > 0.0f ) {
+			// the outside walls run from the top down to the underside, which is the thickness of the floor below the
+			// bottom of the pocket: their middle is half of it below the middle of the cog
+			for ( int k = 0; k < 3; k++ )
+				mid[k] += 0.5f * r.floorT * r.A[k];
+		}
 		float d[3];
 		VectorSubtract( mid, r.C, d );
 		if ( VectorLength( d ) > 0.75f ) {
@@ -1046,6 +1397,10 @@ bool Cog_MakeFromSelected(){
 	r.depth = 0.2f * r.cylR;
 	r.taper = 0.0f;
 	r.tipArc = r.rootArc = 0;
+	r.socket = 0;
+	r.outerR = 1.6f * r.cylR;
+	r.clear = 0.0f;
+	r.floorT = 0.0f;
 	r.hole = 0;
 	r.roundSeg = 4;
 	cogRec_t chk = r;
@@ -1193,4 +1548,291 @@ void Cog_ImportEnd(){
 		p->cogId = p->cogId < 0 ? -to[k] : to[k];
 	}
 	g_cogBefore.clear();
+}
+
+
+/*
+   Cap Segmented: every selected segmented cylinder gets a cap on each open end. A cap is a segmented patch of its
+   own, a cone with its tip in the middle of the end ring: its width is the ring (so it has the same count of
+   segments, and the same points, as the end of the cylinder) and its height is the ring, a half-way row and the
+   middle point. The result is a fan of triangles to the centre, and it keeps nothing of the cylinder: delete or
+   change the cylinder afterwards and the cap stays as it is.
+ */
+static const float *Cap_Pt( const patchMesh_t *p, bool alongU, int line, int k ){
+	return alongU ? p->ctrl[k][line].xyz : p->ctrl[line][k].xyz;
+}
+
+// the middle of a ring: the mean of its on-curve points (the last one repeats the first)
+static void Cap_Middle( const patchMesh_t *p, bool alongU, int line, float *out ){
+	const int n = alongU ? p->width : p->height;
+	VectorClear( out );
+	int cnt = 0;
+	for ( int k = 0; k < n - 1; k += 2 )
+	{
+		VectorAdd( out, Cap_Pt( p, alongU, line, k ), out );
+		cnt++;
+	}
+	VectorScale( out, 1.0f / cnt, out );
+}
+
+static bool Cap_Closed( const patchMesh_t *p, bool alongU ){
+	const int n = alongU ? p->width : p->height;
+	const int lines = alongU ? p->height : p->width;
+	if ( n < 5 ) {
+		return false;
+	}
+	for ( int l = 0; l < lines; l++ )
+	{
+		float d[3];
+		VectorSubtract( Cap_Pt( p, alongU, l, 0 ), Cap_Pt( p, alongU, l, n - 1 ), d );
+		if ( VectorLength( d ) > 0.5f ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool Cog_CapSegmented( int which ){
+	std::vector<patchMesh_t*> src;
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		if ( b->patchBrush && b->pPatch && b->pPatch->segH > 0 ) {
+			src.push_back( b->pPatch );
+		}
+	if ( src.empty() ) {
+		Sys_Printf( "Cap Segmented: select a segmented cylinder.\n" );
+		return false;
+	}
+
+	std::vector<brush_t*> made;
+	Undo_Start( "cap segmented" );
+	for ( size_t pi = 0; pi < src.size(); pi++ )
+	{
+		patchMesh_t *p = src[pi];
+		const bool cu = Cap_Closed( p, true ), cv = Cap_Closed( p, false );
+		if ( cu == cv ) {
+			Sys_Printf( "Cap Segmented: a patch is not a cylinder (it needs exactly one closed ring direction), skipped.\n" );
+			continue;
+		}
+		const bool alongU = cu;
+		const int n = alongU ? p->width : p->height;
+		const int lines = alongU ? p->height : p->width;
+		if ( lines < 3 ) {
+			continue;
+		}
+		// which end is the top: the one whose middle is higher in the world
+		float m0[3], m1[3];
+		Cap_Middle( p, alongU, 0, m0 );
+		Cap_Middle( p, alongU, lines - 1, m1 );
+		const int topEnd = m1[2] > m0[2] ? 1 : 0;
+		for ( int end = 0; end < 2; end++ )
+		{
+			if ( ( which == 1 && end != topEnd ) || ( which == 2 && end == topEnd ) ) {
+				continue;
+			}
+			const int line = end == 0 ? 0 : lines - 1;
+			const int inner = end == 0 ? 2 : lines - 3;
+			float mid[3], inMid[3], out[3];
+			Cap_Middle( p, alongU, line, mid );
+			Cap_Middle( p, alongU, inner, inMid );
+			// a ring that has shrunk to a point is the tip of a cone: nothing to cap
+			float reach = 0;
+			for ( int k = 0; k < n; k++ )
+			{
+				float d[3];
+				VectorSubtract( Cap_Pt( p, alongU, line, k ), mid, d );
+				reach = Cog_Max( reach, VectorLength( d ) );
+			}
+			VectorSubtract( mid, inMid, out );
+			if ( reach < 0.5f || VectorLength( out ) < 0.01f ) {
+				continue;
+			}
+			VectorNormalize( out, out );
+
+			patchMesh_t *c = MakeNewPatch();
+			c->pShader = p->pShader;
+			c->d_texture = p->d_texture;
+			c->width = n;
+			c->height = 3;
+			c->type = PATCH_GENERIC;
+			for ( int k = 0; k < n; k++ )
+			{
+				const float *r = Cap_Pt( p, alongU, line, k );
+				VectorCopy( r, c->ctrl[k][0].xyz );
+				VectorCopy( mid, c->ctrl[k][2].xyz );
+				for ( int a = 0; a < 3; a++ )
+					c->ctrl[k][1].xyz[a] = 0.5f * ( r[a] + mid[a] );
+			}
+			// the texture lies flat across the cap
+			float e1[3], e2[3];
+			VectorSubtract( Cap_Pt( p, alongU, line, 0 ), mid, e1 );
+			VectorMA( e1, -DotProduct( e1, out ), out, e1 );
+			VectorNormalize( e1, e1 );
+			CrossProduct( out, e1, e2 );
+			const float tw = Cog_Max( 1.0f, p->pShader->getTexture()->width * g_PrefsDlg.m_fDefTextureScale );
+			const float th = Cog_Max( 1.0f, p->pShader->getTexture()->height * g_PrefsDlg.m_fDefTextureScale );
+			for ( int k = 0; k < n; k++ )
+				for ( int j = 0; j < 3; j++ )
+				{
+					float d[3];
+					VectorSubtract( c->ctrl[k][j].xyz, mid, d );
+					c->ctrl[k][j].st[0] = DotProduct( d, e1 ) / tw;
+					c->ctrl[k][j].st[1] = DotProduct( d, e2 ) / th;
+				}
+			c->segH = SegPatch_ClampH( p->segH, SegPatch_MinH( c ) );
+			c->segV = 1;
+			// the front is cross(dU,dV) (along the ring, then in towards the middle): it faces out of the cylinder
+			float nrm[3] = { 0, 0, 0 };
+			for ( int k = 0; k + 2 < n; k += 2 )
+			{
+				float a[3], b[3], x[3];
+				VectorSubtract( c->ctrl[k + 2][0].xyz, c->ctrl[k][0].xyz, a );
+				VectorSubtract( mid, c->ctrl[k][0].xyz, b );
+				CrossProduct( a, b, x );
+				VectorAdd( nrm, x, nrm );
+			}
+			if ( DotProduct( nrm, out ) < 0 ) {
+				patchInvert( c );
+			}
+			c->bDirty = true;
+			brush_t *b = Cog_AddBrushForPatch( c );
+			Brush_AddToList( b, &active_brushes );
+			Entity_LinkBrush( p->pSymbiot ? p->pSymbiot->owner : world_entity, b );
+			Brush_Build( b );
+			Patch_Rebuild( c );
+			Undo_EndBrush( b );
+			made.push_back( b );
+		}
+	}
+	Undo_End();
+
+	if ( made.empty() ) {
+		Sys_Printf( "Cap Segmented: nothing to cap (the cylinder needs an open end).\n" );
+		return false;
+	}
+	for ( size_t i = 0; i < made.size(); i++ )
+		Select_Brush( made[i] );
+	UpdatePatchInspector();
+	Sys_UpdateWindows( W_ALL );
+	Sys_Printf( "Cap Segmented: %d caps.\n", (int)made.size() );
+	return true;
+}
+
+
+/*
+   Cone height: a segmented patch of three rows in which one end is a single point and the other a closed ring is a
+   cap (or any cone). The height of the tip over the plane of the ring can be set; the half-way row stays half way
+   between the ring and the tip, so the sides stay straight. Positive is towards the side the patch faces.
+ */
+struct coneInfo_t
+{
+	bool alongU;
+	int ringLine, apexLine;
+	float mid[3];       // middle of the ring
+	float nF[3];        // unit normal of the ring plane, on the side the patch faces
+	float h;            // height of the tip over the ring plane along nF
+};
+
+static bool Cone_Analyze( const patchMesh_t *p, coneInfo_t &c ){
+	if ( p->segH <= 0 ) {
+		return false;
+	}
+	const bool cu = Cap_Closed( p, true ), cv = Cap_Closed( p, false );
+	if ( cu == cv ) {
+		return false;
+	}
+	c.alongU = cu;
+	const int n = cu ? p->width : p->height;
+	const int lines = cu ? p->height : p->width;
+	if ( lines != 3 ) {
+		return false;
+	}
+	bool collapsed[3] = { false, false, false };
+	for ( int l = 0; l < 3; l += 2 )
+	{
+		collapsed[l] = true;
+		for ( int k = 1; k < n; k++ )
+		{
+			float d[3];
+			VectorSubtract( Cap_Pt( p, cu, l, k ), Cap_Pt( p, cu, l, 0 ), d );
+			if ( VectorLength( d ) > 0.05f ) {
+				collapsed[l] = false;
+				break;
+			}
+		}
+	}
+	if ( collapsed[0] == collapsed[2] ) {
+		return false;
+	}
+	c.apexLine = collapsed[0] ? 0 : 2;
+	c.ringLine = 2 - c.apexLine;
+	Cap_Middle( p, cu, c.ringLine, c.mid );
+	const float s = c.ringLine == 0 ? 1.0f : -1.0f;
+	float nrm[3] = { 0, 0, 0 };
+	for ( int k = 0; k + 2 < n; k += 2 )
+	{
+		float a[3], b[3], x[3];
+		VectorSubtract( Cap_Pt( p, cu, c.ringLine, k + 2 ), Cap_Pt( p, cu, c.ringLine, k ), a );
+		VectorSubtract( c.mid, Cap_Pt( p, cu, c.ringLine, k ), b );
+		VectorScale( b, s, b );
+		CrossProduct( a, b, x );
+		VectorAdd( nrm, x, nrm );
+	}
+	if ( VectorNormalize( nrm, c.nF ) < 1e-3f ) {
+		return false;
+	}
+	float d[3];
+	VectorSubtract( Cap_Pt( p, cu, c.apexLine, 0 ), c.mid, d );
+	c.h = DotProduct( d, c.nF );
+	return true;
+}
+
+bool Cone_Selected( float *height, const void **who ){
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		coneInfo_t c;
+		if ( b->patchBrush && b->pPatch && Cone_Analyze( b->pPatch, c ) ) {
+			*height = c.h;
+			*who = b->pPatch;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Cone_SetHeight( float h ){
+	int count = 0;
+	Undo_Start( "cone height" );
+	Undo_AddBrushList( &selected_brushes );
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		patchMesh_t *p = b->pPatch;
+		coneInfo_t c;
+		if ( !b->patchBrush || !p || !Cone_Analyze( p, c ) ) {
+			continue;
+		}
+		const int n = c.alongU ? p->width : p->height;
+		float apex[3];
+		VectorMA( c.mid, h, c.nF, apex );
+		for ( int k = 0; k < n; k++ )
+		{
+			float *ring = c.alongU ? p->ctrl[k][c.ringLine].xyz : p->ctrl[c.ringLine][k].xyz;
+			float *tip = c.alongU ? p->ctrl[k][c.apexLine].xyz : p->ctrl[c.apexLine][k].xyz;
+			float *half = c.alongU ? p->ctrl[k][1].xyz : p->ctrl[1][k].xyz;
+			VectorCopy( apex, tip );
+			for ( int a = 0; a < 3; a++ )
+				half[a] = 0.5f * ( ring[a] + apex[a] );
+		}
+		p->bDirty = true;
+		vec3_t vMin, vMax;
+		Patch_CalcBounds( p, vMin, vMax );
+		Brush_RebuildBrush( p->pSymbiot, vMin, vMax );
+		count++;
+	}
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+	if ( count > 0 ) {
+		UpdatePatchInspector();
+		Sys_UpdateWindows( W_ALL );
+	}
+	return count > 0;
 }

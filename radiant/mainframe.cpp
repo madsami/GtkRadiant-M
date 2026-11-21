@@ -645,6 +645,9 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_BEVELEDGE: g_pParentWnd->OnCurveBeveledge(); break;
 		  case ID_CURVE_COG: g_pParentWnd->OnCurveCog(); break;
 		  case ID_CURVE_COGSELECT: g_pParentWnd->OnCurveCogSelect(); break;
+		  case ID_CURVE_SEGCAP: g_pParentWnd->OnCurveSegcap(); break;
+		  case ID_CURVE_SEGCAPTOP: g_pParentWnd->OnCurveSegcaptop(); break;
+		  case ID_CURVE_SEGCAPBOT: g_pParentWnd->OnCurveSegcapbot(); break;
 		  case ID_CURVE_PATCHDENSETUBE: g_pParentWnd->OnCurvePatchdensetube(); break;
 		  case ID_CURVE_PATCHVERYDENSETUBE: g_pParentWnd->OnCurvePatchverydensetube(); break;
 		  case ID_CURVE_PATCHSQUARE: g_pParentWnd->OnCurvePatchsquare(); break;
@@ -1630,6 +1633,9 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Segmented Cylinder" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDCYLINDER );
 		create_menu_item_with_mnemonic( menu, _( "Make Segmented / Ordinary" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDDISPLAY );
 		create_menu_item_with_mnemonic( menu, _( "Thicken Segmented..." ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGTHICKEN );
+		create_menu_item_with_mnemonic( menu, _( "Cap Segmented" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGCAP );
+		create_menu_item_with_mnemonic( menu, _( "Cap Segmented, Top" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGCAPTOP );
+		create_menu_item_with_mnemonic( menu, _( "Cap Segmented, Bottom" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGCAPBOT );
 		create_menu_item_with_mnemonic( menu, _( "Bevel Edge..." ), G_CALLBACK( HandleCommand ), ID_CURVE_BEVELEDGE );
 		create_menu_item_with_mnemonic( menu, _( "Make Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COG );
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COGSELECT );
@@ -2102,6 +2108,14 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 								 new_image_icon("seg_thicken.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_SEGTHICKEN ) );
 	g_object_set_data( G_OBJECT( window ), "tb_seg_thicken", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Cap Segmented, Top" ), "",
+								 new_image_icon("seg_cap.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_SEGCAPTOP ) );
+	g_object_set_data( G_OBJECT( window ), "tb_seg_cap_top", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Cap Segmented, Bottom" ), "",
+								 new_image_icon("seg_cap_bottom.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_SEGCAPBOT ) );
+	g_object_set_data( G_OBJECT( window ), "tb_seg_cap_bottom", w );
 	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Bevel Edge..." ), "",
 								 new_image_icon("bevel_edge.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_BEVELEDGE ) );
@@ -8286,4 +8300,16 @@ void MainFrame::OnDropGroupAddtoWorld(){
 	   Select_AddToGroup("World");
 	   Sys_UpdateWindows (W_ALL);
 	 */
+}
+
+void MainFrame::OnCurveSegcap(){
+	Cog_CapSegmented( 0 );
+}
+
+void MainFrame::OnCurveSegcaptop(){
+	Cog_CapSegmented( 1 );
+}
+
+void MainFrame::OnCurveSegcapbot(){
+	Cog_CapSegmented( 2 );
 }

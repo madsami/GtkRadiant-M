@@ -28,6 +28,7 @@
 #include <gdk/gdkkeysyms.h>
 #include "stdafx.h"
 #include "segpatch.h"
+#include "cog.h"
 #include "patchdialog.h"
 #include <glib/gi18n.h>
 
@@ -1300,7 +1301,283 @@ static gboolean BevelPanelTick( gpointer data ){
 	return TRUE;
 }
 
+// =============================================================================
+// Floating window for a cog: shows up by itself while a cog is selected (Curve > Make Cog makes one from a
+// cylinder). Every change takes the cog's patches away and makes them again with the new numbers.
+
+static GtkWidget *g_cogPanel = NULL;
+static GtkWidget *g_cogTeeth = NULL, *g_cogRadius = NULL, *g_cogDepth = NULL, *g_cogTipW = NULL;
+static GtkWidget *g_cogBand = NULL, *g_cogTipArc = NULL, *g_cogRootArc = NULL, *g_cogSnap = NULL;
+static const float g_cogSnapSteps[5] = { 0.0f, 0.125f, 0.25f, 0.5f, 1.0f };
+static GtkWidget *g_cogExtrude = NULL, *g_cogNotch = NULL, *g_cogInfo = NULL;
+static bool g_cogListen = false;
+static int g_cogShownId = 0;
+static int g_cogX = -1, g_cogY = -1;
+
+static void CogPanelApply(){
+	if ( !g_cogListen ) {
+		return;
+	}
+	cogRec_t r;
+	int id = 0;
+	if ( !Cog_Selected( &r, &id ) ) {
+		return;
+	}
+	r.teeth = (int)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogTeeth ) );
+	r.mode = gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_cogNotch ) ) ? 1 : 0;
+	r.cylR = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogRadius ) );
+	r.depth = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogDepth ) );
+	r.taper = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogTipW ) );
+	r.hole = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogBand ) );
+	{
+		const int sn = gtk_combo_box_get_active( GTK_COMBO_BOX( g_cogSnap ) );
+		r.snap = ( sn >= 0 && sn < 5 ) ? g_cogSnapSteps[sn] : 0.0f;
+	}
+	r.tipArc = gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_cogTipArc ) ) ? 1 : 0;
+	r.rootArc = gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_cogRootArc ) ) ? 1 : 0;
+	char text[256];
+	Cog_Describe( r, text, sizeof( text ) );
+	gtk_label_set_text( GTK_LABEL( g_cogInfo ), text );
+	Cog_Rebuild( r );
+}
+
+// Making the cog again takes a moment. Done inside the signal of the spin button it holds up the button's own
+// events, and the button, still seeing the mouse down, steps again by itself: a click on the 5% step of the taper
+// came out as 10%. So the change is made a moment later, once the events have been handled (and a quick series of
+// clicks is made in one go).
+static guint g_cogPending = 0;
+
+static gboolean CogPanelDeferred( gpointer data ){
+	g_cogPending = 0;
+	CogPanelApply();
+	return FALSE;
+}
+
+static void OnCogChanged( GtkWidget *widget, gpointer data ){
+	if ( !g_cogListen ) {
+		return;
+	}
+	if ( g_cogPending ) {
+		g_source_remove( g_cogPending );
+	}
+	g_cogPending = g_timeout_add( 80, CogPanelDeferred, NULL );
+}
+
+static void OnCogSelectWhole( GtkWidget *widget, gpointer data ){
+	Cog_SelectWhole();
+}
+
+static gboolean OnCogEnter( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	gtk_window_set_accept_focus( GTK_WINDOW( g_cogPanel ), TRUE );
+	return FALSE;
+}
+
+static gboolean OnCogLeave( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	if ( event->detail == GDK_NOTIFY_INFERIOR ) {
+		return FALSE;
+	}
+	if ( gtk_window_is_active( GTK_WINDOW( g_cogPanel ) ) ) {
+		gtk_window_present( GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	}
+	gtk_window_set_accept_focus( GTK_WINDOW( g_cogPanel ), FALSE );
+	return FALSE;
+}
+
+static GtkWidget* CogSpin( GtkWidget *vbox, const char *label, double lo, double hi, double step, int digits, const char *tip ){
+	GtkWidget *hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox );
+	GtkWidget *l = gtk_label_new( label );
+	gtk_misc_set_alignment( GTK_MISC( l ), 0.0, 0.5 );
+	gtk_widget_set_size_request( l, 110, -1 );
+	gtk_box_pack_start( GTK_BOX( hbox ), l, FALSE, FALSE, 0 );
+	gtk_widget_show( l );
+	GtkWidget *s = gtk_spin_button_new( GTK_ADJUSTMENT( gtk_adjustment_new( lo, lo, hi, step, step * 4, 0 ) ), step, digits );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( s ), TRUE );
+	gtk_widget_set_tooltip_text( s, tip );
+	gtk_box_pack_start( GTK_BOX( hbox ), s, TRUE, TRUE, 0 );
+	gtk_widget_show( s );
+	g_signal_connect( G_OBJECT( s ), "value-changed", G_CALLBACK( OnCogChanged ), NULL );
+	return s;
+}
+
+static void CogPanelBuild(){
+	GtkWidget *vbox, *hbox;
+
+	g_cogPanel = gtk_window_new( GTK_WINDOW_TOPLEVEL );
+	gtk_window_set_title( GTK_WINDOW( g_cogPanel ), _( "Cog" ) );
+	gtk_window_set_transient_for( GTK_WINDOW( g_cogPanel ), GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	gtk_window_set_type_hint( GTK_WINDOW( g_cogPanel ), GDK_WINDOW_TYPE_HINT_UTILITY );
+	gtk_window_set_skip_taskbar_hint( GTK_WINDOW( g_cogPanel ), TRUE );
+	gtk_window_set_focus_on_map( GTK_WINDOW( g_cogPanel ), FALSE );
+	gtk_window_set_accept_focus( GTK_WINDOW( g_cogPanel ), FALSE );
+	gtk_window_set_resizable( GTK_WINDOW( g_cogPanel ), FALSE );
+	gtk_window_set_deletable( GTK_WINDOW( g_cogPanel ), FALSE );
+
+	vbox = gtk_vbox_new( FALSE, 4 );
+	gtk_container_set_border_width( GTK_CONTAINER( vbox ), 6 );
+	gtk_container_add( GTK_CONTAINER( g_cogPanel ), vbox );
+	gtk_widget_show( vbox );
+
+	hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox );
+	g_cogExtrude = gtk_radio_button_new_with_label( NULL, _( "Teeth outside" ) );
+	gtk_widget_set_tooltip_text( g_cogExtrude, _( "The cylinder is the body of the cog and the teeth stand out beyond it" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_cogExtrude, FALSE, FALSE, 0 );
+	gtk_widget_show( g_cogExtrude );
+	g_cogNotch = gtk_radio_button_new_with_label_from_widget( GTK_RADIO_BUTTON( g_cogExtrude ), _( "Teeth inside" ) );
+	gtk_widget_set_tooltip_text( g_cogNotch, _( "The cog is made inside the cylinder: the tips reach its radius and nothing goes beyond it" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_cogNotch, FALSE, FALSE, 0 );
+	gtk_widget_show( g_cogNotch );
+
+	g_cogTeeth = CogSpin( vbox, _( "Teeth" ), 3, 64, 1, 0, _( "How many teeth round the cog" ) );
+	g_cogRadius = CogSpin( vbox, _( "Cylinder radius" ), 1, 4096, 1, 2, _( "The radius of the cylinder the cog was made from. With the teeth outside it is the root, with the teeth inside it is the tip" ) );
+	g_cogDepth = CogSpin( vbox, _( "Tooth depth" ), 0.25, 4096, 0.5, 2, _( "How far the tip is from the root" ) );
+	g_cogTipW = CogSpin( vbox, _( "Tip taper %" ), 0, 90, 5, 0, _( "How much a tooth narrows towards its tip, as a percentage of its base width. 0 keeps the sides parallel, 90 is nearly a point. The base of a tooth is always as wide as the gap next to it, so the cog keeps the segments of the cylinder" ) );
+	g_cogBand = CogSpin( vbox, _( "Hole radius" ), 0, 4096, 1, 2, _( "A hole through the middle of this radius, for a tube or axle. 0 leaves the cog solid" ) );
+	gtk_spin_button_set_snap_to_ticks( GTK_SPIN_BUTTON( g_cogTipW ), TRUE );
+	{
+		GtkWidget *sh = gtk_hbox_new( FALSE, 6 );
+		gtk_box_pack_start( GTK_BOX( vbox ), sh, FALSE, FALSE, 0 );
+		gtk_widget_show( sh );
+		GtkWidget *sl = gtk_label_new( _( "Snap to grid" ) );
+		gtk_misc_set_alignment( GTK_MISC( sl ), 0.0, 0.5 );
+		gtk_widget_set_size_request( sl, 110, -1 );
+		gtk_box_pack_start( GTK_BOX( sh ), sl, FALSE, FALSE, 0 );
+		gtk_widget_show( sl );
+		g_cogSnap = gtk_combo_box_text_new();
+		gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( g_cogSnap ), _( "Off" ) );
+		gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( g_cogSnap ), _( "0.125 (smallest grid)" ) );
+		gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( g_cogSnap ), "0.25" );
+		gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( g_cogSnap ), "0.5" );
+		gtk_combo_box_text_append_text( GTK_COMBO_BOX_TEXT( g_cogSnap ), "1" );
+		gtk_combo_box_set_active( GTK_COMBO_BOX( g_cogSnap ), 0 );
+		gtk_widget_set_tooltip_text( g_cogSnap, _( "Round every control point of the cog to this grid step, so all its corners lie on the grid" ) );
+		gtk_box_pack_start( GTK_BOX( sh ), g_cogSnap, TRUE, TRUE, 0 );
+		gtk_widget_show( g_cogSnap );
+		g_signal_connect( G_OBJECT( g_cogSnap ), "changed", G_CALLBACK( OnCogChanged ), NULL );
+	}
+
+	hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox );
+	g_cogTipArc = gtk_check_button_new_with_label( _( "Tip is an arc" ) );
+	gtk_widget_set_tooltip_text( g_cogTipArc, _( "Follow the circle at the tip instead of a straight chord" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_cogTipArc, FALSE, FALSE, 0 );
+	gtk_widget_show( g_cogTipArc );
+	g_cogRootArc = gtk_check_button_new_with_label( _( "Root is an arc" ) );
+	gtk_widget_set_tooltip_text( g_cogRootArc, _( "Follow the circle at the root instead of a straight chord" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_cogRootArc, FALSE, FALSE, 0 );
+	gtk_widget_show( g_cogRootArc );
+
+	{
+		GtkWidget *sel = gtk_button_new_with_label( _( "Select whole cog  (Ctrl+Shift+A)" ) );
+		gtk_widget_set_tooltip_text( sel, _( "Select every patch of this cog (and bevels made on it), so it can be moved or copied as one. Also on the Curve menu, the same shortcut works in the camera and the grid views" ) );
+		gtk_box_pack_start( GTK_BOX( vbox ), sel, FALSE, FALSE, 0 );
+		gtk_widget_show( sel );
+		g_signal_connect( G_OBJECT( sel ), "clicked", G_CALLBACK( OnCogSelectWhole ), NULL );
+	}
+
+	g_cogInfo = gtk_label_new( "" );
+	gtk_misc_set_alignment( GTK_MISC( g_cogInfo ), 0.0, 0.5 );
+	gtk_label_set_line_wrap( GTK_LABEL( g_cogInfo ), TRUE );
+	gtk_widget_set_size_request( g_cogInfo, 300, -1 );
+	gtk_box_pack_start( GTK_BOX( vbox ), g_cogInfo, FALSE, FALSE, 0 );
+	gtk_widget_show( g_cogInfo );
+
+	g_signal_connect( G_OBJECT( g_cogNotch ), "toggled", G_CALLBACK( OnCogChanged ), NULL );
+	g_signal_connect( G_OBJECT( g_cogTipArc ), "toggled", G_CALLBACK( OnCogChanged ), NULL );
+	g_signal_connect( G_OBJECT( g_cogRootArc ), "toggled", G_CALLBACK( OnCogChanged ), NULL );
+	gtk_widget_add_events( g_cogPanel, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK );
+	g_signal_connect( G_OBJECT( g_cogPanel ), "enter-notify-event", G_CALLBACK( OnCogEnter ), NULL );
+	g_signal_connect( G_OBJECT( g_cogPanel ), "leave-notify-event", G_CALLBACK( OnCogLeave ), NULL );
+}
+
+// put the numbers of a cog into the widgets without rebuilding it
+static void CogPanelFill( const cogRec_t &r ){
+	g_cogListen = false;
+	gtk_spin_button_set_range( GTK_SPIN_BUTTON( g_cogRadius ), 1, r.cylR > 4096 ? r.cylR : 4096 );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogTeeth ), r.teeth );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogRadius ), r.cylR );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogDepth ), r.depth );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogTipW ), r.taper );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogBand ), r.hole );
+	{
+		int at = 0;
+		for ( int i = 1; i < 5; i++ )
+			if ( fabsf( r.snap - g_cogSnapSteps[i] ) < 0.001f ) {
+				at = i;
+			}
+		gtk_combo_box_set_active( GTK_COMBO_BOX( g_cogSnap ), at );
+	}
+	gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( r.mode ? g_cogNotch : g_cogExtrude ), TRUE );
+	gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( g_cogTipArc ), r.tipArc != 0 );
+	gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( g_cogRootArc ), r.rootArc != 0 );
+	char text[256];
+	Cog_Describe( r, text, sizeof( text ) );
+	gtk_label_set_text( GTK_LABEL( g_cogInfo ), text );
+	g_cogListen = true;
+}
+
+static gboolean CogPanelTick( gpointer data ){
+	if ( g_pParentWnd == NULL || g_pParentWnd->m_pWidget == NULL ) {
+		return TRUE;
+	}
+	cogRec_t r;
+	int id = 0;
+	const bool have = Cog_Selected( &r, &id );
+	if ( have && g_cogPanel == NULL ) {
+		CogPanelBuild();
+	}
+	if ( g_cogPanel == NULL ) {
+		return TRUE;
+	}
+	if ( have ) {
+		if ( id != g_cogShownId || !gtk_widget_get_visible( g_cogPanel ) ) {
+			if ( id != g_cogShownId ) {
+				CogPanelFill( r );
+				g_cogShownId = id;
+			}
+		}
+		if ( !gtk_widget_get_visible( g_cogPanel ) ) {
+			if ( g_cogX < 0 ) {
+				GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
+				GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
+				if ( gw ) {
+					gint ox = 0, oy = 0;
+					GtkAllocation a;
+					gdk_window_get_origin( gw, &ox, &oy );
+					gtk_widget_get_allocation( grid, &a );
+					g_cogX = ox + a.width - 380;
+					g_cogY = oy + 260;
+				}
+				else
+				{
+					gint mx = 0, my = 0, mw = 0, mh = 0;
+					gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
+					gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
+					g_cogX = mx + mw - 400;
+					g_cogY = my + 340;
+				}
+			}
+			gtk_window_move( GTK_WINDOW( g_cogPanel ), g_cogX, g_cogY );
+			gtk_widget_show( g_cogPanel );
+		}
+	}
+	else
+	{
+		g_cogShownId = 0;
+		if ( gtk_widget_get_visible( g_cogPanel ) ) {
+			gtk_window_get_position( GTK_WINDOW( g_cogPanel ), &g_cogX, &g_cogY );
+			gtk_widget_hide( g_cogPanel );
+		}
+	}
+	return TRUE;
+}
+
 void SegPanel_Init(){
 	g_timeout_add( 150, SegPanelTick, NULL );
 	g_timeout_add( 150, BevelPanelTick, NULL );
+	g_timeout_add( 150, CogPanelTick, NULL );
 }

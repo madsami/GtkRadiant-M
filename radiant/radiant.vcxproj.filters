@@ -104,6 +104,9 @@
     <ClCompile Include="bevel.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="cog.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="pmesh.cpp">
       <Filter>src</Filter>
     </ClCompile>

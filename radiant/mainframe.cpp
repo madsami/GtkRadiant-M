@@ -27,6 +27,7 @@
 
 #include "stdafx.h"
 #include "segpatch.h"
+#include "cog.h"
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
 #include <gdk/gdkkeysyms.h>
@@ -135,6 +136,7 @@ SCommandInfo g_Commands[] =
 	{"FitTexture", GDK_KEY_B, 0x01, IDC_BTN_FACEFIT, "menu_idc_btn_facefit"},
 	{"ViewTextures", GDK_KEY_T, 0, ID_VIEW_TEXTURE, "menu_view_texture"},
 	{"ThickenPatch", GDK_KEY_T, 0x04, ID_CURVE_THICKEN, "menu_curve_thicken"},
+	{"SelectWholeCog", GDK_KEY_A, 0x05, ID_CURVE_COGSELECT, "menu_curve_cogselect"},
 	{"MakeOverlayPatch", GDK_KEY_Y, 0, ID_CURVE_OVERLAY_SET, "menu_curve_overlay_set"},
 	{"ClearPatchOverlays", GDK_KEY_L, 0x04, ID_CURVE_OVERLAY_CLEAR, "menu_curve_overlay_clear"},
 	{"SurfaceInspector", GDK_KEY_S, 0, ID_TEXTURES_INSPECTOR, "menu_textures_inspector"},
@@ -641,6 +643,8 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_ROUNDDISPLAY: g_pParentWnd->OnCurveSegtoggle(); break;
 		  case ID_CURVE_SEGTHICKEN: g_pParentWnd->OnCurveSegthicken(); break;
 		  case ID_CURVE_BEVELEDGE: g_pParentWnd->OnCurveBeveledge(); break;
+		  case ID_CURVE_COG: g_pParentWnd->OnCurveCog(); break;
+		  case ID_CURVE_COGSELECT: g_pParentWnd->OnCurveCogSelect(); break;
 		  case ID_CURVE_PATCHDENSETUBE: g_pParentWnd->OnCurvePatchdensetube(); break;
 		  case ID_CURVE_PATCHVERYDENSETUBE: g_pParentWnd->OnCurvePatchverydensetube(); break;
 		  case ID_CURVE_PATCHSQUARE: g_pParentWnd->OnCurvePatchsquare(); break;
@@ -1627,6 +1631,8 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Make Segmented / Ordinary" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDDISPLAY );
 		create_menu_item_with_mnemonic( menu, _( "Thicken Segmented..." ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGTHICKEN );
 		create_menu_item_with_mnemonic( menu, _( "Bevel Edge..." ), G_CALLBACK( HandleCommand ), ID_CURVE_BEVELEDGE );
+		create_menu_item_with_mnemonic( menu, _( "Make Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COG );
+		create_menu_item_with_mnemonic( menu, _( "Select Whole Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COGSELECT );
 		menu_separator( menu );
 		create_menu_item_with_mnemonic( menu, _( "End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHENDCAP );
 		create_menu_item_with_mnemonic( menu, _( "Improved End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDENDCAP );
@@ -2100,6 +2106,10 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 								 new_image_icon("bevel_edge.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_BEVELEDGE ) );
 	g_object_set_data( G_OBJECT( window ), "tb_bevel_edge", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Make Cog (from a selected cylinder)" ), "",
+								 new_image_icon("cog.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_COG ) );
+	g_object_set_data( G_OBJECT( window ), "tb_cog", w );
 
 	/*
 	   uh? that is OLD
@@ -6795,6 +6805,7 @@ void MainFrame::OnCurveRoundselected(){
 	Undo_End();
 }
 
+
 void MainFrame::OnCurveSegcylinder(){
 	Undo_Start( "make segmented cylinder" );
 	Undo_AddBrushList( &selected_brushes );
@@ -6819,6 +6830,14 @@ void MainFrame::OnCurveBeveledge(){
 		return;
 	}
 	BevelPanel_Apply();
+}
+
+void MainFrame::OnCurveCog(){
+	Cog_MakeFromSelected();
+}
+
+void MainFrame::OnCurveCogSelect(){
+	Cog_SelectWhole();
 }
 
 void MainFrame::OnCurveSegtoggle(){

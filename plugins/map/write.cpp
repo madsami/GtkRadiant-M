@@ -238,6 +238,14 @@ void Primitive_Write( brush_t *pBrush, IDataStream *out ){
 	}
 	else
 	{
+		if ( pBrush->patchBrush && pBrush->pPatch->cogId > 0 && g_MapVersion == MAPVERSION_Q3 ) {
+			// a patch of a cog: the id and the cog's numbers, in a comment line the compilers ignore.
+			// The patch itself is written as usual. Map_Read puts the numbers back into the patch.
+			out->printf( "//@cog %i ", pBrush->pPatch->cogId );
+			for ( int c = 0; c < COG_NPARAM; c++ )
+				Float_Write( pBrush->pPatch->cog[c], out );
+			out->printf( "\n" );
+		}
 		out->printf( "// brush %i\n", g_count_brushes++ );
 		out->printf( "{\n" );
 		if ( pBrush->patchBrush ) {

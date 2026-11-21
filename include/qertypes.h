@@ -346,6 +346,7 @@ typedef struct {
 
 #define MAX_PATCH_WIDTH     32
 #define MAX_PATCH_HEIGHT    32
+#define COG_NPARAM         32      // floats of a cog's record that every patch of the cog carries (see cog.h)
 
 // patch type info
 // type in lower 16 bits, flags in upper
@@ -438,6 +439,10 @@ typedef struct {
 	void *drawLists; // pointer to std::list
 	// segmented patch (see segpatch.h): 0 = ordinary patch, else the number of segments along the width / height
 	int segH, segV;
+	// cog (see cog.h in the editor): 0 = an ordinary patch, else the id of the cog this patch is a part of.
+	// cog holds that cog's numbers (the same on every patch of it), saved in //@cog comment lines.
+	int cogId;
+	float cog[COG_NPARAM];
 } patchMesh_t;
 
 typedef struct brush_s

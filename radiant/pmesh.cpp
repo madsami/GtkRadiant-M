@@ -66,6 +66,7 @@ patchMesh_t* Patch_Alloc(){
 	pPatch->bDirty = true;
 	pPatch->LODUpdated = false;
 	pPatch->segH = pPatch->segV = 0;
+	pPatch->cogId = 0;
 
 	int i;
 	for ( i = 0; i < ( ( ( MAX_PATCH_WIDTH - 1 ) - 1 ) / 2 ); i++ )
@@ -84,6 +85,7 @@ patchMesh_t* MakeNewPatch(){
 	pm->drawLists = NULL;
 	pm->bDirty = true;
 	pm->segH = pm->segV = 0;
+	pm->cogId = 0;
 
 	return pm;
 }
@@ -558,7 +560,10 @@ brush_t* AddBrushForPatch( patchMesh_t *pm, bool bLinkToWorld ){
 
 	for ( int j = 0; j < 3; j++ )
 	{
-		if ( vMin[j] == vMax[j] ) {
+		// Not only an exactly flat patch: a nearly flat one gives a brush as thin as it is, and building it
+		// snaps its planes to the grid and collapses them ("brush plane with no normal"). The same rule as in
+		// Brush_RebuildBrush. This is also what copying and undo use to clone a patch.
+		if ( vMax[j] - vMin[j] < 1.0f ) {
 			vMin[j] -= 4;
 			vMax[j] += 4;
 		}
@@ -3616,7 +3621,9 @@ static segCache_t* Seg_GetCache( patchMesh_t *p ){
 				VectorSubtract( G[ui * V + v1].xyz, G[ui * V + v0].xyz, dV );
 				CrossProduct( dV, dU, nrm ); // the front side: the way the strips below wind (as the stock patch drawing)
 				float l = VectorLength( nrm );
-				if ( l > 1e-6f ) {
+				// a tangent that is only rounding noise (the sample is on a row that has collapsed to a point) gives a
+				// normal that points anywhere: treat it as no normal at all, it is filled in from its neighbours below
+				if ( l > 1e-6f && VectorLength( dU ) > 1e-3f && VectorLength( dV ) > 1e-3f ) {
 					VectorScale( nrm, 1.0f / l, c.normals[ui * V + vi].xyz );
 				}
 				else
@@ -3624,6 +3631,32 @@ static segCache_t* Seg_GetCache( patchMesh_t *p ){
 					VectorClear( c.normals[ui * V + vi].xyz );
 				}
 			}
+		}
+		// Where the surface collapses to a point along one direction (the apex of a triangle patch, a whole row that
+		// is one point) the two tangents are parallel and the normal comes out as zero, which dims the lighting
+		// across the whole face. Such a point takes the normal of the nearest sample that has one.
+		for ( int pass = 0; pass < 2; pass++ )
+		{
+			for ( ui = 0; ui < U; ui++ )
+				for ( vi = 0; vi < V; vi++ )
+				{
+					float *nz = c.normals[ui * V + vi].xyz;
+					if ( nz[0] != 0 || nz[1] != 0 || nz[2] != 0 ) {
+						continue;
+					}
+					const int nb[4][2] = { { ui, vi - 1 }, { ui, vi + 1 }, { ui - 1, vi }, { ui + 1, vi } };
+					for ( int k = 0; k < 4; k++ )
+					{
+						if ( nb[k][0] < 0 || nb[k][0] >= U || nb[k][1] < 0 || nb[k][1] >= V ) {
+							continue;
+						}
+						const float *nn = c.normals[nb[k][0] * V + nb[k][1]].xyz;
+						if ( nn[0] != 0 || nn[1] != 0 || nn[2] != 0 ) {
+							VectorCopy( nn, nz );
+							break;
+						}
+					}
+				}
 		}
 	}
 	return c.grid.U ? &c : NULL;

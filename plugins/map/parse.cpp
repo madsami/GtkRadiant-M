@@ -239,6 +239,16 @@ void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 	GetToken( false );
 
 	GetToken( false ); //)
+	if ( strcmp( token, ")" ) ) {
+		// the numbers of a cog (see cog.h): its id, then COG_NPARAM floats, put here by Segpatch_Preprocess
+		pPatch->cogId = atoi( token );
+		for ( i = 0; i < COG_NPARAM; i++ )
+		{
+			GetToken( false );
+			pPatch->cog[i] = (float)atof( token );
+		}
+		GetToken( false ); //)
+	}
 
 	// parse matrix
 	GetToken( true ); //(
@@ -611,11 +621,52 @@ static char* Segpatch_Preprocess( const char *buf ){
 	char *o = out;
 	const char *p = buf;
 	bool skipping = false;
+	// A patch of a cog has a line "//@cog <id> <numbers>" in front of it. It is moved into the size line of the
+	// patch that follows ( "( w h 0 0 0 )" becomes "( w h 0 0 0 <id> <numbers> )" ), where Patch_Parse reads it.
+	const char *cogText = NULL;
+	size_t cogLen = 0;
 	while ( *p )
 	{
 		const char *nl = strchr( p, '\n' );
 		const char *next = nl ? nl + 1 : p + strlen( p );
 		size_t n = next - p; // the line, with its line end
+
+		if ( !skipping && !strncmp( p, "//@cog ", 7 ) ) {
+			cogText = p + 7;
+			const char *e = nl ? nl : p + strlen( p );
+			while ( e > cogText && ( e[-1] == '\r' || e[-1] == ' ' ) )
+				e--;
+			cogLen = e - cogText;
+			p = next;
+			continue;
+		}
+		if ( !skipping && cogText ) {
+			const char *q = p;
+			while ( *q == ' ' || *q == '\t' )
+				q++;
+			const char *close = NULL;
+			if ( *q == '(' ) {
+				const char *e = nl ? nl : p + strlen( p );
+				while ( e > q && ( e[-1] == '\r' || e[-1] == ' ' ) )
+					e--;
+				if ( e > q && e[-1] == ')' && e - q >= 8 && !strncmp( e - 8, " 0 0 0 )", 8 ) ) {
+					close = e - 1;
+				}
+			}
+			if ( close ) {
+				memcpy( o, p, close - p );
+				o += close - p;
+				*o++ = ' ';
+				memcpy( o, cogText, cogLen );
+				o += cogLen;
+				*o++ = ' ';
+				memcpy( o, close, next - close );
+				o += next - close;
+				cogText = NULL;
+				p = next;
+				continue;
+			}
+		}
 
 		if ( skipping ) {
 			if ( !strncmp( p, "// segpieces end", 16 ) ) {

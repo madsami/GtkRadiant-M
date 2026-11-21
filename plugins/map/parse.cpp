@@ -238,16 +238,54 @@ void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 	GetToken( false );
 	GetToken( false );
 
+	pPatch->seatId = pPatch->seatCount = 0;
 	GetToken( false ); //)
-	if ( strcmp( token, ")" ) ) {
-		// the numbers of a cog (see cog.h): its id, then COG_NPARAM floats, put here by Segpatch_Preprocess
-		pPatch->cogId = atoi( token );
-		for ( i = 0; i < COG_NPARAM; i++ )
-		{
+	while ( strcmp( token, ")" ) )
+	{
+		if ( !strcmp( token, "seat" ) ) {
+			// seat cut (see seatcut.h), put here by Segpatch_Preprocess: the cutter id of this patch, the number of hulls,
+			// then for every hull its cutter id, its plane count and the planes
 			GetToken( false );
-			pPatch->cog[i] = (float)atof( token );
+			pPatch->seatId = atoi( token );
+			GetToken( false );
+			int nHulls = atoi( token );
+			for ( int h = 0; h < nHulls; h++ )
+			{
+				GetToken( false );
+				int id = atoi( token );
+				GetToken( false );
+				int n = atoi( token );
+				seatHull_t *sh = ( pPatch->seatCount < SEAT_MAX_HULLS ) ? &pPatch->seat[pPatch->seatCount] : NULL;
+				if ( sh ) {
+					sh->id = id;
+					sh->n = ( n < SEAT_MAX_PLANES ) ? n : SEAT_MAX_PLANES;
+				}
+				for ( int k = 0; k < n; k++ )
+					for ( int c = 0; c < 4; c++ )
+					{
+						GetToken( false );
+						if ( sh && k < SEAT_MAX_PLANES ) {
+							sh->pl[k][c] = (float)atof( token );
+						}
+					}
+				if ( sh ) {
+					pPatch->seatCount++;
+				}
+			}
 		}
-		GetToken( false ); //)
+		else
+		{
+			// the numbers of a cog (see cog.h): its id, then COG_NPARAM floats, put here by Segpatch_Preprocess
+			pPatch->cogId = atoi( token );
+			for ( i = 0; i < COG_NPARAM; i++ )
+			{
+				GetToken( false );
+				pPatch->cog[i] = (float)atof( token );
+			}
+		}
+		if ( !GetToken( false ) ) { //) or the next part
+			break;
+		}
 	}
 
 	// parse matrix
@@ -625,11 +663,24 @@ static char* Segpatch_Preprocess( const char *buf ){
 	// patch that follows ( "( w h 0 0 0 )" becomes "( w h 0 0 0 <id> <numbers> )" ), where Patch_Parse reads it.
 	const char *cogText = NULL;
 	size_t cogLen = 0;
+	// the same for the seat cut of a patch ( "//@seat seat <numbers>" ), see seatcut.h
+	const char *seatText = NULL;
+	size_t seatLen = 0;
 	while ( *p )
 	{
 		const char *nl = strchr( p, '\n' );
 		const char *next = nl ? nl + 1 : p + strlen( p );
 		size_t n = next - p; // the line, with its line end
+
+		if ( !skipping && !strncmp( p, "//@seat ", 8 ) ) {
+			seatText = p + 8;
+			const char *e = nl ? nl : p + strlen( p );
+			while ( e > seatText && ( e[-1] == '\r' || e[-1] == ' ' ) )
+				e--;
+			seatLen = e - seatText;
+			p = next;
+			continue;
+		}
 
 		if ( !skipping && !strncmp( p, "//@cog ", 7 ) ) {
 			cogText = p + 7;
@@ -640,7 +691,7 @@ static char* Segpatch_Preprocess( const char *buf ){
 			p = next;
 			continue;
 		}
-		if ( !skipping && cogText ) {
+		if ( !skipping && ( cogText || seatText ) ) {
 			const char *q = p;
 			while ( *q == ' ' || *q == '\t' )
 				q++;
@@ -662,12 +713,20 @@ static char* Segpatch_Preprocess( const char *buf ){
 				memcpy( o, lineStart, close - lineStart );
 				o += close - lineStart;
 				*o++ = ' ';
-				memcpy( o, cogText, cogLen );
-				o += cogLen;
-				*o++ = ' ';
+				if ( cogText ) {
+					memcpy( o, cogText, cogLen );
+					o += cogLen;
+					*o++ = ' ';
+				}
+				if ( seatText ) {
+					memcpy( o, seatText, seatLen );
+					o += seatLen;
+					*o++ = ' ';
+				}
 				memcpy( o, close, next - close );
 				o += next - close;
 				cogText = NULL;
+				seatText = NULL;
 				p = next;
 				continue;
 			}

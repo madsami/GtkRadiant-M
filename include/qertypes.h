@@ -348,6 +348,15 @@ typedef struct {
 #define MAX_PATCH_HEIGHT    32
 #define COG_NPARAM         32      // floats of a cog's record that every patch of the cog carries (see cog.h)
 
+// the convex hull of a seat cutter as planes: a point x is inside when n.x + d <= 0 for every plane ( pl = n, d )
+#define SEAT_MAX_HULLS     4
+#define SEAT_MAX_PLANES    96
+typedef struct {
+	int id;                              // the cutter (patchMesh_t::seatId) this hull belongs to
+	int n;                               // planes in use
+	float pl[SEAT_MAX_PLANES][4];
+} seatHull_t;
+
 // patch type info
 // type in lower 16 bits, flags in upper
 // endcaps directly follow this patch in the list
@@ -443,6 +452,12 @@ typedef struct {
 	// cog holds that cog's numbers (the same on every patch of it), saved in //@cog comment lines.
 	int cogId;
 	float cog[COG_NPARAM];
+	// seat cut (see seatcut.h in the editor): seatId > 0 marks a patch of a cutter (every patch of one cutter has the same
+	// id). seat[] holds the hulls of the cutters that cut a hole into this patch; the hole is applied when the patch is
+	// drawn or saved (see SegPatch_Cut in segpatch.h). The hulls are worked out again whenever a cutter or a host moves.
+	int seatId;
+	int seatCount;
+	seatHull_t seat[SEAT_MAX_HULLS];
 } patchMesh_t;
 
 typedef struct brush_s

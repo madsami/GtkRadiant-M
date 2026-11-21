@@ -98,7 +98,7 @@ static bool SegPatch_Write( patchMesh_t *p, IDataStream *out ){
 		return false;
 	}
 	std::vector<segPiece_t> pieces;
-	SegPatch_Pieces( g, pieces );
+	SegPatch_BuildPieces( p, g, pieces );
 	const char *str = Patch_ShaderForFile( p );
 
 	if ( p->cogId != 0 ) {
@@ -106,6 +106,19 @@ static bool SegPatch_Write( patchMesh_t *p, IDataStream *out ){
 		out->printf( "//@cog %i ", p->cogId );
 		for ( int c = 0; c < COG_NPARAM; c++ )
 			Float_Write( p->cog[c], out );
+		out->printf( "\n" );
+	}
+	if ( p->seatId != 0 || p->seatCount > 0 ) {
+		// seat cut (see seatcut.h): the id of the cutter this patch belongs to, then the hulls that cut a hole into it
+		// ( id, plane count, the planes ). Map_Read puts them into the size line of the cage.
+		out->printf( "//@seat seat %i %i ", p->seatId, p->seatCount );
+		for ( int h = 0; h < p->seatCount; h++ )
+		{
+			out->printf( "%i %i ", p->seat[h].id, p->seat[h].n );
+			for ( int k = 0; k < p->seat[h].n; k++ )
+				for ( int c = 0; c < 4; c++ )
+					Float_Write( p->seat[h].pl[k][c], out );
+		}
 		out->printf( "\n" );
 	}
 	out->printf( "// brush %i (segmented patch, %i x %i segments)\n", g_count_brushes++, p->segH, p->segV );

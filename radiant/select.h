@@ -54,6 +54,7 @@ void WINAPI Select_SetTexture( texdef_t *texdef, brushprimit_texdef_t *brushprim
 void Select_FlipAxis( int axis );
 void Select_RotateAxis( int axis, float deg, bool bPaint = true, bool bMouse = false );
 void Select_RealCompleteTall( vec3_t mins, vec3_t maxs );
+void Select_RealTouchingTall( vec3_t mins, vec3_t maxs );
 void Select_CompleteTall( void );
 void Select_PartialTall( void );
 void Select_Touching( void );

@@ -113,6 +113,7 @@ vec3_t tdp;
 GtkWidget* XYWnd::m_mnuDrop = NULL;
 
 extern int g_nPatchClickedView;
+void Drag_DrawAreaXY( int nDim1, int nDim2, int view );
 
 // =============================================================================
 // global functions
@@ -3092,6 +3093,9 @@ void XYWnd::XY_Draw(){
 	if ( !( m_nViewType == XY ) ) {
 		qglPopMatrix();
 	}
+	// the rectangle of a rectangle selection
+	Drag_DrawAreaXY( nDim1, nDim2, ( m_nViewType == XY ) ? W_XY : ( m_nViewType == YZ ) ? W_YZ : W_XZ );
+
 #if 0
 	// area selection hack
 	if ( ( g_qeglobals.d_select_mode == sel_area || g_qeglobals.d_select_mode == sel_areatall ) && ( g_nPatchClickedView == ( ( m_nViewType == XY ) ? W_XY : ( m_nViewType == YZ ) ? W_YZ : W_XZ ) ) ) {

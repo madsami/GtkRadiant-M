@@ -36,6 +36,8 @@ extern void Select_ShiftTexture( int x, int y );
 extern void Select_RotateTexture( int amt );
 
 extern int g_nPatchClickedView;
+void Drag_DrawAreaCam( int w, int h );
+bool Drag_CameraAreaActive();
 
 brush_t* g_pSplitList = NULL;
 
@@ -148,7 +150,7 @@ void CamWnd::OnMouseMove( guint32 flags, int pointx, int pointy ){
 	// that can be re-enabled by removing the checks for HasCapture and not shift/ctrl down
 	// but the scaling/rotating (unless done with the steps set in the surface inspector
 	// dialog) is way too sensitive to be of any use
-	if ( HasCapture() && Sys_AltDown() &&
+	if ( HasCapture() && Sys_AltDown() && !Drag_CameraAreaActive() &&
 		 !( ( flags & MK_SHIFT ) || ( flags & MK_CONTROL ) ) ) {
 		if ( flags & MK_CONTROL ) {
 			Select_RotateTexture( pointy - m_ptLastCursorY );
@@ -1760,6 +1762,9 @@ void CamWnd::Cam_Draw(){
 		//qglPopMatrix();
 		//qglMatrixMode(GL_MODELVIEW);
 	}
+
+	// the rectangle of a rectangle selection
+	Drag_DrawAreaCam( m_Camera.width, m_Camera.height );
 
 #if 0
 	if ( ( g_qeglobals.d_select_mode == sel_area ) && ( g_nPatchClickedView == W_CAMERA ) ) {

@@ -1171,6 +1171,33 @@ void Select_RealCompleteTall( vec3_t mins, vec3_t maxs ){
 	}
 }
 
+// every brush that overlaps the rectangle in the two axes of the grid view, whatever its height
+void Select_RealTouchingTall( vec3_t mins, vec3_t maxs ){
+	brush_t *b, *next;
+
+	int nDim1 = ( g_pParentWnd->ActiveXY()->GetViewType() == YZ ) ? 1 : 0;
+	int nDim2 = ( g_pParentWnd->ActiveXY()->GetViewType() == XY ) ? 1 : 2;
+
+	g_qeglobals.d_select_mode = sel_brush;
+
+	for ( b = active_brushes.next ; b != &active_brushes ; b = next )
+	{
+		next = b->next;
+
+		if ( b->bFiltered ) {
+			continue;
+		}
+
+		if ( ( b->mins[nDim1] > maxs[nDim1] || b->maxs[nDim1] < mins[nDim1] )
+			 || ( b->mins[nDim2] > maxs[nDim2] || b->maxs[nDim2] < mins[nDim2] ) ) {
+			continue;
+		}
+
+		Brush_RemoveFromList( b );
+		Brush_AddToList( b, &selected_brushes );
+	}
+}
+
 void Select_CompleteTall( void ){
 	vec3_t mins, maxs;
 

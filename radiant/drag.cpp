@@ -49,6 +49,160 @@ int lastx, lasty;
 
 qboolean drag_first;
 
+/*
+   Rectangle selection (Alt+drag, in the grid views and in the camera): drag a rectangle to select what is in it.
+   Everything the rectangle touches, completely or partly, is selected. Without Ctrl
+   or Shift held when the button is let go the selection is replaced, with one of them it is added to.
+   The grid views work in world units (tall: the height does not count), the camera in window pixels; the corners
+   are kept in d_vAreaTL / d_vAreaBR.
+ */
+static bool g_marqCam = false;     // the rectangle is in the camera (window pixels), else in a grid view
+
+// draws the rectangle (corners in the units of the current projection): a soft magenta-grey fill you can see
+// through, and a dotted dark-grey outline
+static void Marquee_DrawRect( float x0, float y0, float x1, float y1 ){
+	qglPushAttrib( GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT | GL_POLYGON_BIT );
+	qglDisable( GL_TEXTURE_2D );
+	qglDisable( GL_DEPTH_TEST );
+	qglDisable( GL_CULL_FACE );
+	qglDisable( GL_LIGHTING );
+	qglEnable( GL_BLEND );
+	qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+	qglPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+	qglColor4f( 0.72f, 0.40f, 0.66f, 0.22f );
+	qglRectf( x0, y0, x1, y1 );
+	qglPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+	qglEnable( GL_LINE_STIPPLE );
+	qglLineStipple( 2, 0xAAAA );
+	qglLineWidth( 2.0f );
+	qglColor4f( 0.17f, 0.17f, 0.17f, 0.95f );
+	qglBegin( GL_LINE_LOOP );
+	qglVertex2f( x0, y0 );
+	qglVertex2f( x1, y0 );
+	qglVertex2f( x1, y1 );
+	qglVertex2f( x0, y1 );
+	qglEnd();
+	qglPopAttrib();
+}
+
+// called by a grid view while it draws, with its two axes and which view it is (W_XY, W_XZ, W_YZ)
+void Drag_DrawAreaXY( int nDim1, int nDim2, int view ){
+	if ( g_qeglobals.d_select_mode != sel_areatall || g_marqCam || g_nPatchClickedView != view ) {
+		return;
+	}
+	Marquee_DrawRect( g_qeglobals.d_vAreaTL[nDim1], g_qeglobals.d_vAreaTL[nDim2], g_qeglobals.d_vAreaBR[nDim1], g_qeglobals.d_vAreaBR[nDim2] );
+}
+
+// called by the camera at the end of a frame
+void Drag_DrawAreaCam( int w, int h ){
+	if ( g_qeglobals.d_select_mode != sel_areatall || !g_marqCam ) {
+		return;
+	}
+	qglMatrixMode( GL_PROJECTION );
+	qglPushMatrix();
+	qglLoadIdentity();
+	qglOrtho( 0, (float)w, 0, (float)h, -1, 1 );
+	qglMatrixMode( GL_MODELVIEW );
+	qglPushMatrix();
+	qglLoadIdentity();
+	Marquee_DrawRect( g_qeglobals.d_vAreaTL[0], g_qeglobals.d_vAreaTL[1], g_qeglobals.d_vAreaBR[0], g_qeglobals.d_vAreaBR[1] );
+	qglPopMatrix();
+	qglMatrixMode( GL_PROJECTION );
+	qglPopMatrix();
+	qglMatrixMode( GL_MODELVIEW );
+}
+
+// true while the camera is dragging a selection rectangle
+bool Drag_CameraAreaActive(){
+	return g_marqCam && g_qeglobals.d_select_mode == sel_areatall;
+}
+
+// What a rectangle in the camera touches or contains. Every brush is projected as the box of its bounds (the
+// edges of the box are cut at the camera plane first, so a brush that reaches behind the camera still counts).
+static void Select_CameraRect( float x0, float y0, float x1, float y1, bool crossing ){
+	camera_t *c = g_pParentWnd->GetCamWnd()->Camera();
+	const float hw = 0.5f * c->width, hh = 0.5f * c->height;
+	g_qeglobals.d_select_mode = sel_brush;
+
+	for ( brush_t *b = active_brushes.next, *next; b != &active_brushes; b = next )
+	{
+		next = b->next;
+		if ( b->bFiltered ) {
+			continue;
+		}
+		vec3_t corner[8];
+		float f[8];
+		bool allFront = true;
+		for ( int i = 0; i < 8; i++ )
+		{
+			for ( int k = 0; k < 3; k++ )
+				corner[i][k] = ( i >> k ) & 1 ? b->maxs[k] : b->mins[k];
+			vec3_t d;
+			VectorSubtract( corner[i], c->origin, d );
+			f[i] = DotProduct( d, c->vpn );
+			if ( f[i] < 1.0f ) {
+				allFront = false;
+			}
+		}
+		if ( !allFront && !crossing ) {
+			continue;
+		}
+		float lo[2] = { 1e30f, 1e30f }, hi[2] = { -1e30f, -1e30f };
+		bool any = false;
+		for ( int i = 0; i < 8; i++ )
+			for ( int k = 0; k < 3; k++ )
+			{
+				const int j = i ^ ( 1 << k );
+				if ( j < i ) {
+					continue;
+				}
+				// the part of the edge in front of the camera (at least 1 unit)
+				vec3_t p[2];
+				int n = 0;
+				if ( f[i] >= 1.0f ) {
+					VectorCopy( corner[i], p[n] );
+					n++;
+				}
+				if ( f[j] >= 1.0f ) {
+					VectorCopy( corner[j], p[n] );
+					n++;
+				}
+				if ( n == 1 && ( f[i] < 1.0f ) != ( f[j] < 1.0f ) ) {
+					const float t = ( 1.0f - f[i] ) / ( f[j] - f[i] );
+					for ( int a = 0; a < 3; a++ )
+						p[n][a] = corner[i][a] + t * ( corner[j][a] - corner[i][a] );
+					n++;
+				}
+				for ( int q = 0; q < n; q++ )
+				{
+					vec3_t d;
+					VectorSubtract( p[q], c->origin, d );
+					const float ff = DotProduct( d, c->vpn );
+					const float sx = hw + DotProduct( d, c->vright ) / ff * hw;
+					const float sy = hh + DotProduct( d, c->vup ) / ff * hw;
+					lo[0] = MIN( lo[0], sx );
+					hi[0] = MAX( hi[0], sx );
+					lo[1] = MIN( lo[1], sy );
+					hi[1] = MAX( hi[1], sy );
+					any = true;
+				}
+			}
+		if ( !any ) {
+			continue;
+		}
+		if ( crossing ) {
+			if ( hi[0] < x0 || lo[0] > x1 || hi[1] < y0 || lo[1] > y1 ) {
+				continue;
+			}
+		}
+		else if ( lo[0] < x0 || hi[0] > x1 || lo[1] < y0 || hi[1] > y1 ) {
+			continue;
+		}
+		Brush_RemoveFromList( b );
+		Brush_AddToList( b, &selected_brushes );
+	}
+}
+
 
 void    AxializeVector( vec3_t v ){
 	vec3_t a;
@@ -347,10 +501,22 @@ void Drag_Begin( int x, int y, int buttons,
 	}
 
 	// (shift-)alt-LBUTTON = area select completely tall
-	if ( !sf_camera &&
-		 ( g_PrefsDlg.m_bALTEdge ? buttons == ( MK_LBUTTON | MK_CONTROL | MK_SHIFT ) : ( buttons == MK_LBUTTON || buttons == ( MK_LBUTTON | MK_CONTROL | MK_SHIFT ) ) ) &&
+	if ( ( g_PrefsDlg.m_bALTEdge ? buttons == ( MK_LBUTTON | MK_CONTROL | MK_SHIFT ) : ( buttons == MK_LBUTTON || buttons == ( MK_LBUTTON | MK_CONTROL | MK_SHIFT ) ) ) &&
 		 altdown && g_qeglobals.d_select_mode != sel_curvepoint ) {
+		if ( sf_camera ) {
+			// the same in the camera, with the rectangle in window pixels
+			g_marqCam = true;
+			g_qeglobals.d_select_mode = sel_areatall;
+			pressx = x;
+			pressy = y;
+			VectorSet( g_qeglobals.d_vAreaTL, x, y, 0 );
+			VectorSet( g_qeglobals.d_vAreaBR, x, y, 0 );
+			drag_ok = true;
+			Sys_UpdateWindows( W_CAMERA );
+			return;
+		}
 		if ( g_pParentWnd->ActiveXY()->AreaSelectOK() ) {
+			g_marqCam = false;
 			g_qeglobals.d_select_mode = sel_areatall;
 
 			Drag_Setup( x, y, buttons, xaxis, yaxis, origin, dir );
@@ -771,6 +937,16 @@ void Drag_MouseMoved( int x, int y, int buttons ){
 		}
 	}
 
+	if ( g_qeglobals.d_select_mode == sel_areatall && g_marqCam ) {
+		camera_t *cam = g_pParentWnd->GetCamWnd()->Camera();
+		// the rectangle stays inside the window
+		x = x < 0 ? 0 : ( x > cam->width - 1 ? cam->width - 1 : x );
+		y = y < 0 ? 0 : ( y > cam->height - 1 ? cam->height - 1 : y );
+		VectorSet( g_qeglobals.d_vAreaBR, x, y, 0 );
+		Sys_UpdateWindows( W_CAMERA );
+		return;
+	}
+
 	if ( g_qeglobals.d_select_mode == sel_area && g_nPatchClickedView == W_CAMERA ) {
 		camera_t *m_pCamera = g_pParentWnd->GetCamWnd()->Camera();
 
@@ -824,22 +1000,45 @@ void Drag_MouseUp( int nButtons ){
 	if ( g_qeglobals.d_select_mode == sel_areatall ) {
 		vec3_t mins, maxs;
 
+		const bool cam = g_marqCam;
+		g_marqCam = false;
 		int nDim1 = ( g_pParentWnd->ActiveXY()->GetViewType() == YZ ) ? 1 : 0;
 		int nDim2 = ( g_pParentWnd->ActiveXY()->GetViewType() == XY ) ? 1 : 2;
+		if ( cam ) {
+			nDim1 = 0;
+			nDim2 = 1;
+		}
 
 		// get our rectangle
 		mins[nDim1] = MIN( g_qeglobals.d_vAreaTL[nDim1], g_qeglobals.d_vAreaBR[nDim1] );
 		mins[nDim2] = MIN( g_qeglobals.d_vAreaTL[nDim2], g_qeglobals.d_vAreaBR[nDim2] );
 		maxs[nDim1] = MAX( g_qeglobals.d_vAreaTL[nDim1], g_qeglobals.d_vAreaBR[nDim1] );
 		maxs[nDim2] = MAX( g_qeglobals.d_vAreaTL[nDim2], g_qeglobals.d_vAreaBR[nDim2] );
+		// everything the rectangle touches, completely or partly
+		const bool crossing = true;
+		// a click that did not drag leaves the selection alone
+		const float tiny = cam ? 3.0f : 3.0f / g_pParentWnd->ActiveXY()->Scale();
+		const bool dragged = ( maxs[nDim1] - mins[nDim1] ) >= tiny || ( maxs[nDim2] - mins[nDim2] ) >= tiny;
+		g_qeglobals.d_select_mode = sel_brush;
 
-		// deselect current selection
-		if ( !( nButtons & ( MK_CONTROL | MK_SHIFT ) ) ) {
-			Select_Deselect();
+		if ( dragged ) {
+			// deselect current selection
+			if ( !( nButtons & ( MK_CONTROL | MK_SHIFT ) ) ) {
+				Select_Deselect();
+			}
+
+			// select new selection
+			if ( cam ) {
+				Select_CameraRect( mins[0], mins[1], maxs[0], maxs[1], crossing );
+			}
+			else if ( crossing ) {
+				Select_RealTouchingTall( mins, maxs );
+			}
+			else
+			{
+				Select_RealCompleteTall( mins, maxs );
+			}
 		}
-
-		// select new selection
-		Select_RealCompleteTall( mins, maxs );
 
 		Sys_UpdateWindows( W_ALL );
 	}

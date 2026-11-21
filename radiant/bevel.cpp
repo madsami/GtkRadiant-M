@@ -1252,6 +1252,20 @@ static bool Bevel_Linked( const bevelRec_t &a, const bevelRec_t &b ){
 	return false;
 }
 
+// A piece of a bevel made between two patches of the same cog is marked as part of it (cogId = minus the cog's id,
+// saved in the map), so Select Whole Cog finds it even when the bevel records are gone (after loading a map)
+static void Bevel_TagCog( patchMesh_t *dst, const patchMesh_t *a, const patchMesh_t *b ){
+	const int id = abs( a->cogId );
+	if ( id != 0 && id == abs( b->cogId ) ) {
+		dst->cogId = -id;
+		memcpy( dst->cog, a->cog, sizeof( dst->cog ) );
+	}
+	else
+	{
+		dst->cogId = 0;
+	}
+}
+
 static void Bevel_Save( const patchMesh_t *p, std::vector<drawVert_t> &out ){
 	out.clear();
 	for ( int i = 0; i < p->width; i++ )
@@ -1414,6 +1428,7 @@ static brush_t* Bevel_Build( const bevelEdge_t &e, float width, int nsub, bevelR
 		s->pShader = pa->pShader;
 		s->d_texture = pa->d_texture;
 	}
+	Bevel_TagCog( s, pa, pb );
 	s->width = n;
 	s->height = 3;
 	s->type = PATCH_GENERIC;
@@ -2222,6 +2237,7 @@ static bool Bevel_CapEnd( bevelRec_t &r, int end, std::vector<brush_t*> &modifie
 	else if ( useUndo ) {
 		Bevel_UndoAdd( fb );
 	}
+	Bevel_TagCog( fp, first.b->pPatch, s );
 	fp->width = 3;
 	fp->height = 3;
 	fp->type = PATCH_GENERIC;

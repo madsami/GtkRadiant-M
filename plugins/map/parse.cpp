@@ -644,6 +644,11 @@ static char* Segpatch_Preprocess( const char *buf ){
 			const char *q = p;
 			while ( *q == ' ' || *q == '\t' )
 				q++;
+			const char *lineStart = p;
+			if ( !strncmp( q, "//@seg ", 7 ) ) { // the size line of a segmented patch's cage
+				q += 7;
+				lineStart = q;
+			}
 			const char *close = NULL;
 			if ( *q == '(' ) {
 				const char *e = nl ? nl : p + strlen( p );
@@ -654,8 +659,8 @@ static char* Segpatch_Preprocess( const char *buf ){
 				}
 			}
 			if ( close ) {
-				memcpy( o, p, close - p );
-				o += close - p;
+				memcpy( o, lineStart, close - lineStart );
+				o += close - lineStart;
 				*o++ = ' ';
 				memcpy( o, cogText, cogLen );
 				o += cogLen;

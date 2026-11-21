@@ -3,6 +3,7 @@
  */
 #include "stdafx.h"
 #include <vector>
+#include <algorithm>
 #include <math.h>
 #include "cog.h"
 #include "bevel.h"
@@ -12,6 +13,10 @@ void WINAPI Patch_Naturalize( patchMesh_t *p );
 #define COG_PI 3.14159265358979f
 #define COG_MIN_TEETH 3
 #define COG_MAX_TEETH 64
+// the last of the cog numbers every patch carries is not part of the record: it says which part of the cog the patch
+// is (0 a wall, 10 + end a piece of a cap, 1000 + end * 100 + k the top of tooth k), so the cog can find where it is
+// turned to even after it was rotated
+#define COG_PARTSLOT ( COG_NPARAM - 1 )
 
 // what the last cog was set to, for the next one: teeth inside to begin with
 static int g_cogLastMode = 1;
@@ -45,6 +50,8 @@ void Cog_Pack( const cogRec_t &r, float *o ){
 	o[n++] = (float)r.roundSeg;
 	o[n++] = r.rimBevel;
 	o[n++] = (float)r.rimSub;
+	o[n++] = r.cone;
+	o[n++] = r.cone2;
 }
 
 void Cog_Unpack( const float *in, cogRec_t &r ){
@@ -70,6 +77,14 @@ void Cog_Unpack( const float *in, cogRec_t &r ){
 	r.roundSeg = (int)( in[n++] + 0.5f );
 	r.rimBevel = in[n++];
 	r.rimSub = (int)( in[n++] + 0.5f );
+	r.cone = in[n++]; // cogs saved before it existed have 0 here
+	if ( !( r.cone > -1e6f && r.cone < 1e6f ) ) {
+		r.cone = 0;
+	}
+	r.cone2 = in[n++];
+	if ( !( r.cone2 > -1e6f && r.cone2 < 1e6f ) ) {
+		r.cone2 = 0;
+	}
 	if ( !( r.snap >= 0.0f && r.snap <= 16.0f ) ) {
 		r.snap = 0;
 	}
@@ -178,7 +193,24 @@ static bool Cog_Shape( const cogRec_t &r, cogShape_t &s ){
 	if ( r.hole > 0 && ( r.hole < 0.25f || r.hole > s.maxHole ) ) {
 		return false;
 	}
+	// a cap that dips must not reach the middle plane, so the walls between the caps keep a length
+	for ( int cap = 0; cap < 2; cap++ )
+	{
+		const float c = cap == 0 ? r.cone : r.cone2;
+		if ( c < 0.0f && 0.5f * r.height + c * ( 1.0f - r.hole / s.rTip ) < 0.25f ) {
+			return false;
+		}
+	}
 	return true;
+}
+
+// The height of a cap at a point of the profile, along the axis from the middle plane: the slope runs in a straight
+// line (in the distance from the axis) from `cone` above the edge height in the middle to the edge height at the
+// tips of the teeth. Used for the points the surface passes through; the control point between two of them is put
+// half way between their heights, so it lies on the straight line between them.
+static float Cog_CapZ( const cogRec_t &r, const cogShape_t &s, int cap, float x, float y ){
+	const float d = sqrtf( x * x + y * y );
+	return 0.5f * r.height + ( cap == 0 ? r.cone : r.cone2 ) * ( 1.0f - d / s.rTip );
 }
 
 void Cog_Describe( const cogRec_t &r, char *text, int len ){
@@ -191,7 +223,7 @@ void Cog_Describe( const cogRec_t &r, char *text, int len ){
 		}
 		else
 		{
-			_snprintf( text, len, "These numbers do not make a cog (too many teeth, too deep or too narrow)" );
+			_snprintf( text, len, "These numbers do not make a cog (too many teeth, too deep or too narrow, or the dip of the ends is too deep for the length)" );
 		}
 		text[len - 1] = 0;
 		return;
@@ -403,7 +435,6 @@ static int Cog_Generate( const cogRec_t &r, int id, IShader *shader, entity_t *o
 
 	const int n = s.n;
 	const int N = r.teeth;
-	const float hz = 0.5f * r.height;
 	const bool hollow = r.hole > 0;
 	float want[3];
 
@@ -429,10 +460,16 @@ static int Cog_Generate( const cogRec_t &r, int id, IShader *shader, entity_t *o
 		patchMesh_t *p = Cog_NewPatch( g, 3, 3 );
 		const float px[3] = { s.vx[i], s.cx[i], s.vx[j] };
 		const float py[3] = { s.vy[i], s.cy[i], s.vy[j] };
-		const float pz[3] = { hz, 0.0f, -hz };
+		// the top of the wall is where the cap is (it slopes with the cap); the middle point is half way
+		const float zt0 = Cog_CapZ( r, s, 0, px[0], py[0] ), zt2 = Cog_CapZ( r, s, 0, px[2], py[2] );
+		const float zb0 = Cog_CapZ( r, s, 1, px[0], py[0] ), zb2 = Cog_CapZ( r, s, 1, px[2], py[2] );
+		const float zt[3] = { zt0, 0.5f * ( zt0 + zt2 ), zt2 }, zb[3] = { zb0, 0.5f * ( zb0 + zb2 ), zb2 };
 		for ( int a = 0; a < 3; a++ )
-			for ( int b = 0; b < 3; b++ )
-				Cog_Lift( g, px[a], py[a], pz[b], p->ctrl[a][b].xyz );
+		{
+			Cog_Lift( g, px[a], py[a], zt[a], p->ctrl[a][0].xyz );
+			Cog_Lift( g, px[a], py[a], 0.0f, p->ctrl[a][1].xyz );
+			Cog_Lift( g, px[a], py[a], -zb[a], p->ctrl[a][2].xyz );
+		}
 		Cog_Dir( g, s.vy[j] - s.vy[i], -( s.vx[j] - s.vx[i] ), want ); // out of the material
 		Cog_Finish( g, p, want, false );
 	}
@@ -449,10 +486,15 @@ static int Cog_Generate( const cogRec_t &r, int id, IShader *shader, entity_t *o
 			patchMesh_t *p = Cog_NewPatch( g, 3, 3 );
 			const float px[3] = { hax, hcx, hbx };
 			const float py[3] = { hay, hcy, hby };
-			const float pz[3] = { hz, 0.0f, -hz };
+			const float zt0 = Cog_CapZ( r, s, 0, px[0], py[0] ), zt2 = Cog_CapZ( r, s, 0, px[2], py[2] );
+			const float zb0 = Cog_CapZ( r, s, 1, px[0], py[0] ), zb2 = Cog_CapZ( r, s, 1, px[2], py[2] );
+			const float zt[3] = { zt0, 0.5f * ( zt0 + zt2 ), zt2 }, zb[3] = { zb0, 0.5f * ( zb0 + zb2 ), zb2 };
 			for ( int a = 0; a < 3; a++ )
-				for ( int b = 0; b < 3; b++ )
-					Cog_Lift( g, px[a], py[a], pz[b], p->ctrl[a][b].xyz );
+			{
+				Cog_Lift( g, px[a], py[a], zt[a], p->ctrl[a][0].xyz );
+				Cog_Lift( g, px[a], py[a], 0.0f, p->ctrl[a][1].xyz );
+				Cog_Lift( g, px[a], py[a], -zb[a], p->ctrl[a][2].xyz );
+			}
 			Cog_Dir( g, -( hby - hay ), hbx - hax, want ); // towards the axis
 			Cog_Finish( g, p, want, false );
 		}
@@ -461,7 +503,7 @@ static int Cog_Generate( const cogRec_t &r, int id, IShader *shader, entity_t *o
 	// the two caps
 	for ( int cap = 0; cap < 2; cap++ )
 	{
-		const float z = cap == 0 ? hz : -hz;
+		const float sg = cap == 0 ? 1.0f : -1.0f;
 		for ( int k = 0; k < 3; k++ )
 			want[k] = cap == 0 ? r.A[k] : -r.A[k];
 
@@ -470,14 +512,17 @@ static int Cog_Generate( const cogRec_t &r, int id, IShader *shader, entity_t *o
 		{
 			const int bl = ( 4 * k + n - 1 ) % n, tl = 4 * k, tr = 4 * k + 1, br = 4 * k + 2;
 			patchMesh_t *p = Cog_NewPatch( g, 3, 3 );
-			Cog_Lift( g, s.vx[bl], s.vy[bl], z, p->ctrl[0][0].xyz );
-			Cog_Lift( g, s.vx[br], s.vy[br], z, p->ctrl[2][0].xyz );
-			Cog_Lift( g, s.vx[tl], s.vy[tl], z, p->ctrl[0][2].xyz );
-			Cog_Lift( g, s.vx[tr], s.vy[tr], z, p->ctrl[2][2].xyz );
-			Cog_Lift( g, 0.5f * ( s.vx[bl] + s.vx[br] ), 0.5f * ( s.vy[bl] + s.vy[br] ), z, p->ctrl[1][0].xyz );
-			Cog_Lift( g, s.cx[tl], s.cy[tl], z, p->ctrl[1][2].xyz );
-			Cog_Lift( g, 0.5f * ( s.vx[bl] + s.vx[tl] ), 0.5f * ( s.vy[bl] + s.vy[tl] ), z, p->ctrl[0][1].xyz );
-			Cog_Lift( g, 0.5f * ( s.vx[br] + s.vx[tr] ), 0.5f * ( s.vy[br] + s.vy[tr] ), z, p->ctrl[2][1].xyz );
+			p->cog[COG_PARTSLOT] = (float)( 1000 + cap * 100 + k ); // the top of tooth k of this end
+			const float zbl = Cog_CapZ( r, s, cap, s.vx[bl], s.vy[bl] ), zbr = Cog_CapZ( r, s, cap, s.vx[br], s.vy[br] );
+			const float ztl = Cog_CapZ( r, s, cap, s.vx[tl], s.vy[tl] ), ztr = Cog_CapZ( r, s, cap, s.vx[tr], s.vy[tr] );
+			Cog_Lift( g, s.vx[bl], s.vy[bl], sg * zbl, p->ctrl[0][0].xyz );
+			Cog_Lift( g, s.vx[br], s.vy[br], sg * zbr, p->ctrl[2][0].xyz );
+			Cog_Lift( g, s.vx[tl], s.vy[tl], sg * ztl, p->ctrl[0][2].xyz );
+			Cog_Lift( g, s.vx[tr], s.vy[tr], sg * ztr, p->ctrl[2][2].xyz );
+			Cog_Lift( g, 0.5f * ( s.vx[bl] + s.vx[br] ), 0.5f * ( s.vy[bl] + s.vy[br] ), sg * 0.5f * ( zbl + zbr ), p->ctrl[1][0].xyz );
+			Cog_Lift( g, s.cx[tl], s.cy[tl], sg * 0.5f * ( ztl + ztr ), p->ctrl[1][2].xyz );
+			Cog_Lift( g, 0.5f * ( s.vx[bl] + s.vx[tl] ), 0.5f * ( s.vy[bl] + s.vy[tl] ), sg * 0.5f * ( zbl + ztl ), p->ctrl[0][1].xyz );
+			Cog_Lift( g, 0.5f * ( s.vx[br] + s.vx[tr] ), 0.5f * ( s.vy[br] + s.vy[tr] ), sg * 0.5f * ( zbr + ztr ), p->ctrl[2][1].xyz );
 			for ( int k3 = 0; k3 < 3; k3++ )
 				p->ctrl[1][1].xyz[k3] = 0.5f * ( p->ctrl[1][0].xyz[k3] + p->ctrl[1][2].xyz[k3] );
 			Cog_Finish( g, p, want, true );
@@ -502,10 +547,15 @@ static int Cog_Generate( const cogRec_t &r, int id, IShader *shader, entity_t *o
 			const float ox[3] = { re.ax, re.cx, re.bx };
 			const float oy[3] = { re.ay, re.cy, re.by };
 			patchMesh_t *p = Cog_NewPatch( g, 3, 3 );
+			p->cog[COG_PARTSLOT] = (float)( 10 + cap ); // a piece of this end
+			const float zi0 = Cog_CapZ( r, s, cap, ix[0], iy[0] ), zi2 = Cog_CapZ( r, s, cap, ix[2], iy[2] );
+			const float zo0 = Cog_CapZ( r, s, cap, ox[0], oy[0] ), zo2 = Cog_CapZ( r, s, cap, ox[2], oy[2] );
+			const float zi[3] = { zi0, 0.5f * ( zi0 + zi2 ), zi2 };
+			const float zo[3] = { zo0, 0.5f * ( zo0 + zo2 ), zo2 };
 			for ( int a = 0; a < 3; a++ )
 			{
-				Cog_Lift( g, ix[a], iy[a], z, p->ctrl[a][0].xyz );
-				Cog_Lift( g, ox[a], oy[a], z, p->ctrl[a][2].xyz );
+				Cog_Lift( g, ix[a], iy[a], sg * zi[a], p->ctrl[a][0].xyz );
+				Cog_Lift( g, ox[a], oy[a], sg * zo[a], p->ctrl[a][2].xyz );
 				for ( int k3 = 0; k3 < 3; k3++ )
 					p->ctrl[a][1].xyz[k3] = 0.5f * ( p->ctrl[a][0].xyz[k3] + p->ctrl[a][2].xyz[k3] );
 			}
@@ -536,6 +586,20 @@ static void Cog_Collect( int id, std::vector<brush_t*> &out ){
 		}
 }
 
+// The pieces of bevels made on a cog (strips and corner caps) carry the cog's id as a negative number, so that
+// they stay part of it when the map is saved and loaded again (the bevel records do not). They are not cog
+// patches in the sense of Cog_IsCogPatch: they have none of the cog's own numbers to edit.
+static void Cog_CollectBevels( int id, std::vector<brush_t*> &out ){
+	for ( int list = 0; list < 2; list++ )
+	{
+		brush_t *head = list ? &active_brushes : &selected_brushes;
+		for ( brush_t *b = head->next; b != head; b = b->next )
+			if ( b->patchBrush && b->pPatch && b->pPatch->cogId == -id ) {
+				out.push_back( b );
+			}
+	}
+}
+
 static int Cog_NextId(){
 	int top = 0;
 	brush_t *b;
@@ -564,21 +628,231 @@ bool Cog_Selected( cogRec_t *out, int *id ){
 	Cog_Unpack( first->pPatch->cog, r );
 	const int cid = first->pPatch->cogId;
 
-	// The cog is symmetric (the same all the way round the axis, the same at both ends), so the middle of all its
-	// control points is the middle of the cog: that is where it is now, if it was moved after it was made.
 	std::vector<brush_t*> all;
 	Cog_Collect( cid, all );
+
+	bool framed = false;
+	// Where the cog points now, if it was rotated after it was made. The pieces of a cap are the same all the way
+	// round the axis, so the middle of all the points of one cap is on the axis: the axis runs from the bottom cap to
+	// the top one. The direction of tooth 0 is the one from the axis to the middle of the top of tooth 0 (the patches
+	// say which part they are, see COG_PARTSLOT; cogs saved before that keep the direction they had).
+	{
+		double cs[2][3] = { { 0, 0, 0 }, { 0, 0, 0 } };
+		long cn[2] = { 0, 0 };
+		const patchMesh_t *tooth0 = NULL;
+		for ( size_t i = 0; i < all.size(); i++ )
+		{
+			const patchMesh_t *p = all[i]->pPatch;
+			const int code = (int)( p->cog[COG_PARTSLOT] + 0.5f );
+			int cap = -1;
+			if ( code == 10 || code == 11 ) {
+				cap = code - 10;
+			}
+			else if ( code >= 1000 && code < 1200 ) {
+				cap = ( code - 1000 ) / 100;
+				if ( code == 1000 ) {
+					tooth0 = p;
+				}
+			}
+			if ( cap < 0 ) {
+				continue;
+			}
+			for ( int a = 0; a < p->width; a++ )
+				for ( int b = 0; b < p->height; b++ )
+				{
+					for ( int k = 0; k < 3; k++ )
+						cs[cap][k] += p->ctrl[a][b].xyz[k];
+					cn[cap]++;
+				}
+		}
+		if ( cn[0] > 0 && cn[1] > 0 ) {
+			float d[3], u[3];
+			for ( int k = 0; k < 3; k++ )
+				d[k] = (float)( cs[0][k] / cn[0] - cs[1][k] / cn[1] );
+			if ( VectorLength( d ) > 0.5f ) {
+				VectorScale( d, 1.0f / VectorLength( d ), u );
+				// the direction of tooth 0, across the new axis
+				float e[3] = { 0, 0, 0 };
+				bool haveE = false;
+				if ( tooth0 ) {
+					double ms[3] = { 0, 0, 0 };
+					for ( int a = 0; a < 3; a++ )
+						for ( int b = 0; b < 3; b++ )
+							for ( int k = 0; k < 3; k++ )
+								ms[k] += tooth0->ctrl[a][b].xyz[k] / 9.0;
+					float axisPt[3];
+					for ( int k = 0; k < 3; k++ )
+						axisPt[k] = (float)( cs[0][k] / cn[0] );
+					for ( int k = 0; k < 3; k++ )
+						e[k] = (float)ms[k] - axisPt[k];
+					const float al = DotProduct( e, u );
+					for ( int k = 0; k < 3; k++ )
+						e[k] -= al * u[k];
+					haveE = VectorLength( e ) > 0.1f;
+				}
+				if ( !haveE ) {
+					const float al = DotProduct( r.E1, u );
+					for ( int k = 0; k < 3; k++ )
+						e[k] = r.E1[k] - al * u[k];
+					haveE = VectorLength( e ) > 0.1f;
+				}
+				if ( haveE ) {
+					VectorScale( e, 1.0f / VectorLength( e ), e );
+					VectorCopy( u, r.A );
+					VectorCopy( e, r.E1 );
+					framed = tooth0 != NULL;
+				}
+			}
+		}
+	}
+	if ( !framed ) {
+		// A cog without the part codes: the axis is the direction the columns of most of the 3 x 3 patches run in (the
+		// walls: three columns, all along the axis), the sign the one nearest to what it was. The cog looks the same
+		// turned by the pitch of its teeth, so the direction of any tooth will do: the one nearest to what it was.
+		struct colDir_t
+		{
+			const patchMesh_t *p;
+			float u[3];
+		};
+		std::vector<colDir_t> cand;
+		for ( size_t i = 0; i < all.size(); i++ )
+		{
+			const patchMesh_t *p = all[i]->pPatch;
+			if ( p->width != 3 || p->height != 3 ) {
+				continue;
+			}
+			colDir_t c;
+			c.p = p;
+			bool ok = true;
+			for ( int a = 0; a < 3 && ok; a++ )
+			{
+				float d[3];
+				VectorSubtract( p->ctrl[a][2].xyz, p->ctrl[a][0].xyz, d );
+				const float l = VectorLength( d );
+				if ( l < 0.5f ) {
+					ok = false;
+					break;
+				}
+				VectorScale( d, 1.0f / l, d );
+				if ( a == 0 ) {
+					VectorCopy( d, c.u );
+				}
+				else if ( fabsf( DotProduct( d, c.u ) ) < 0.999f ) {
+					ok = false;
+				}
+			}
+			if ( ok ) {
+				cand.push_back( c );
+			}
+		}
+		size_t bestAt = 0;
+		int bestN = 0;
+		for ( size_t i = 0; i < cand.size(); i++ )
+		{
+			int n = 0;
+			for ( size_t j = 0; j < cand.size(); j++ )
+				if ( fabsf( DotProduct( cand[i].u, cand[j].u ) ) > 0.999f ) {
+					n++;
+				}
+			if ( n > bestN ) {
+				bestN = n;
+				bestAt = i;
+			}
+		}
+		if ( bestN >= 6 ) {
+			float u[3];
+			VectorCopy( cand[bestAt].u, u );
+			if ( DotProduct( u, r.A ) < 0 ) {
+				VectorScale( u, -1.0f, u );
+			}
+			std::vector<const patchMesh_t*> walls;
+			double ws[3] = { 0, 0, 0 };
+			for ( size_t i = 0; i < cand.size(); i++ )
+				if ( fabsf( DotProduct( cand[i].u, u ) ) > 0.999f ) {
+					walls.push_back( cand[i].p );
+					for ( int a = 0; a < 3; a++ )
+						for ( int k = 0; k < 3; k++ )
+							ws[k] += cand[i].p->ctrl[a][1].xyz[k] / ( 3.0 * bestN );
+				}
+			float cw[3] = { (float)ws[0], (float)ws[1], (float)ws[2] };
+			// the walls whose middle is furthest from the axis are the tips of the teeth
+			std::vector<std::vector<float> > dirs;
+			std::vector<float> dist;
+			float maxD = 0;
+			for ( size_t i = 0; i < walls.size(); i++ )
+			{
+				float m[3];
+				VectorSubtract( walls[i]->ctrl[1][1].xyz, cw, m );
+				const float al = DotProduct( m, u );
+				for ( int k = 0; k < 3; k++ )
+					m[k] -= al * u[k];
+				const float l = VectorLength( m );
+				std::vector<float> v( m, m + 3 );
+				dirs.push_back( v );
+				dist.push_back( l );
+				maxD = Cog_Max( maxD, l );
+			}
+			float want[3];
+			const float al = DotProduct( r.E1, u );
+			for ( int k = 0; k < 3; k++ )
+				want[k] = r.E1[k] - al * u[k];
+			float bestDot = -2.0f;
+			float pick[3] = { 0, 0, 0 };
+			for ( size_t i = 0; i < walls.size(); i++ )
+			{
+				if ( dist[i] < 0.98f * maxD || dist[i] < 0.1f ) {
+					continue;
+				}
+				float dp = 0;
+				for ( int k = 0; k < 3; k++ )
+					dp += dirs[i][k] / dist[i] * want[k];
+				if ( dp > bestDot ) {
+					bestDot = dp;
+					for ( int k = 0; k < 3; k++ )
+						pick[k] = dirs[i][k] / dist[i];
+				}
+			}
+			if ( bestDot > -2.0f ) {
+				VectorCopy( u, r.A );
+				VectorCopy( pick, r.E1 );
+			}
+		}
+	}
+
+	// The cog is the same all the way round the axis, so the middle of the middle row of control points of its walls
+	// (the points half way along the axis, whatever the slope of the two ends) is the middle of the cog: that is
+	// where it is now, if it was moved after it was made. If no wall is found (turned by hand) all points are used.
 	double sum[3] = { 0, 0, 0 };
 	long count = 0;
-	for ( size_t i = 0; i < all.size(); i++ )
-	{
-		const patchMesh_t *p = all[i]->pPatch;
-		for ( int a = 0; a < p->width; a++ )
-			for ( int b = 0; b < p->height; b++ )
-				for ( int k = 0; k < 3; k++ )
-					sum[k] += p->ctrl[a][b].xyz[k];
-		count += p->width * p->height;
-	}
+	for ( int pass = 0; pass < 2 && count == 0; pass++ )
+		for ( size_t i = 0; i < all.size(); i++ )
+		{
+			const patchMesh_t *p = all[i]->pPatch;
+			bool wall = pass == 1;
+			if ( !wall && p->width == 3 && p->height == 3 ) {
+				wall = true;
+				for ( int a = 0; a < 3 && wall; a++ )
+				{
+					float d[3];
+					VectorSubtract( p->ctrl[a][2].xyz, p->ctrl[a][0].xyz, d );
+					const float l = VectorLength( d );
+					wall = l > 0.5f && fabsf( DotProduct( d, r.A ) ) > 0.99f * l;
+				}
+			}
+			if ( !wall ) {
+				continue;
+			}
+			for ( int a = 0; a < p->width; a++ )
+				for ( int b = 0; b < p->height; b++ )
+				{
+					if ( pass == 0 && b != 1 ) {
+						continue;
+					}
+					for ( int k = 0; k < 3; k++ )
+						sum[k] += p->ctrl[a][b].xyz[k];
+					count++;
+				}
+		}
 	if ( count > 0 ) {
 		float mid[3] = { (float)( sum[0] / count ), (float)( sum[1] / count ), (float)( sum[2] / count ) };
 		float d[3];
@@ -607,12 +881,13 @@ static bool Cog_InSelection( brush_t *b ){
 int Cog_SelectWhole(){
 	std::vector<int> ids;
 	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
-		if ( Cog_IsCogPatch( b ) ) {
+		if ( b->patchBrush && b->pPatch && b->pPatch->cogId != 0 ) { // a patch of a cog, or of a bevel made on one
+			const int id = abs( b->pPatch->cogId );
 			bool have = false;
 			for ( size_t i = 0; i < ids.size(); i++ )
-				have = have || ids[i] == b->pPatch->cogId;
+				have = have || ids[i] == id;
 			if ( !have ) {
-				ids.push_back( b->pPatch->cogId );
+				ids.push_back( id );
 			}
 		}
 	if ( ids.empty() ) {
@@ -621,11 +896,17 @@ int Cog_SelectWhole(){
 	}
 	std::vector<brush_t*> parts;
 	for ( size_t i = 0; i < ids.size(); i++ )
+	{
 		Cog_Collect( ids[i], parts );
-	// bevels made on the cog with Bevel Edge are part of it too
+		Cog_CollectBevels( ids[i], parts );
+	}
+	// bevels made on the cog with Bevel Edge are part of it too (also those not marked, from the records)
 	std::vector<brush_t*> strips;
 	Bevel_StripsOf( parts, strips );
-	parts.insert( parts.end(), strips.begin(), strips.end() );
+	for ( size_t i = 0; i < strips.size(); i++ )
+		if ( std::find( parts.begin(), parts.end(), strips[i] ) == parts.end() ) {
+			parts.push_back( strips[i] );
+		}
 	int added = 0, total = 0;
 	for ( size_t i = 0; i < parts.size(); i++ )
 	{
@@ -829,9 +1110,13 @@ bool Cog_Rebuild( const cogRec_t &in ){
 
 	// bevels made on the cog go with it (they would be left hanging in the air otherwise)
 	{
+		Cog_CollectBevels( id, old );
 		std::vector<brush_t*> strips;
 		Bevel_StripsOf( old, strips );
-		old.insert( old.end(), strips.begin(), strips.end() );
+		for ( size_t i = 0; i < strips.size(); i++ )
+			if ( std::find( old.begin(), old.end(), strips[i] ) == old.end() ) {
+				old.push_back( strips[i] );
+			}
 	}
 	BevelEdge_Clear();
 	std::vector<brush_t*> made;
@@ -846,4 +1131,66 @@ bool Cog_Rebuild( const cogRec_t &in ){
 	UpdatePatchInspector();
 	Sys_UpdateWindows( W_ALL );
 	return count > 0;
+}
+
+// =============================================================================
+// copies
+
+// Copy / paste / clone bring patches that carry the id of the cog they were copied from. A copy must be a cog of
+// its own (the panel and Select Whole Cog work on one id), so the patches that came in with an id that is already
+// used by a patch that was there before get a new one (the same new one for all patches of one old id).
+static std::vector<brush_t*> g_cogBefore;
+
+void Cog_ImportBegin(){
+	g_cogBefore.clear();
+	for ( int list = 0; list < 2; list++ )
+	{
+		brush_t *head = list ? &active_brushes : &selected_brushes;
+		for ( brush_t *b = head->next; b != head; b = b->next )
+			if ( b->patchBrush && b->pPatch && b->pPatch->cogId != 0 ) {
+				g_cogBefore.push_back( b );
+			}
+	}
+}
+
+void Cog_ImportEnd(){
+	int top = 0;
+	std::vector<int> oldIds;
+	for ( size_t i = 0; i < g_cogBefore.size(); i++ )
+		oldIds.push_back( abs( g_cogBefore[i]->pPatch->cogId ) );
+	std::vector<brush_t*> fresh;
+	for ( int list = 0; list < 2; list++ )
+	{
+		brush_t *head = list ? &active_brushes : &selected_brushes;
+		for ( brush_t *b = head->next; b != head; b = b->next )
+		{
+			if ( !b->patchBrush || !b->pPatch || b->pPatch->cogId == 0 ) {
+				continue;
+			}
+			if ( abs( b->pPatch->cogId ) > top ) {
+				top = abs( b->pPatch->cogId );
+			}
+			if ( std::find( g_cogBefore.begin(), g_cogBefore.end(), b ) == g_cogBefore.end() ) {
+				fresh.push_back( b );
+			}
+		}
+	}
+	std::vector<int> from, to;
+	for ( size_t i = 0; i < fresh.size(); i++ )
+	{
+		patchMesh_t *p = fresh[i]->pPatch;
+		const int id = abs( p->cogId );
+		if ( std::find( oldIds.begin(), oldIds.end(), id ) == oldIds.end() ) {
+			continue; // not a copy of a cog that is here
+		}
+		size_t k = 0;
+		while ( k < from.size() && from[k] != id )
+			k++;
+		if ( k == from.size() ) {
+			from.push_back( id );
+			to.push_back( ++top );
+		}
+		p->cogId = p->cogId < 0 ? -to[k] : to[k];
+	}
+	g_cogBefore.clear();
 }

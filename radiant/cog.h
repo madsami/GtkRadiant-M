@@ -41,6 +41,10 @@ struct cogRec_t
 	int roundSeg;
 	float rimBevel;
 	int rimSub;
+	// how much higher (+) or lower (-) the middle of each cap is than its edge: from the middle (or the edge of the
+	// hole) out to the tips of the teeth the cap runs in a fixed slope, at both ends of the cog
+	float cone;             // the end on the +axis side
+	float cone2;            // the end on the other side
 };
 
 void Cog_Pack( const cogRec_t &r, float *out );             // out: COG_NPARAM floats
@@ -63,5 +67,9 @@ bool Cog_Rebuild( const cogRec_t &r );
 
 // the sizes the panel needs: the radii of tip and root, and the room left in a gap, for the label
 void Cog_Describe( const cogRec_t &r, char *text, int len );
+
+// around a paste / clone: the copies of a cog get an id of their own
+void Cog_ImportBegin();
+void Cog_ImportEnd();
 
 #endif

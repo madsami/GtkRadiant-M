@@ -1307,6 +1307,7 @@ static gboolean BevelPanelTick( gpointer data ){
 
 static GtkWidget *g_cogPanel = NULL;
 static GtkWidget *g_cogTeeth = NULL, *g_cogRadius = NULL, *g_cogDepth = NULL, *g_cogTipW = NULL;
+static GtkWidget *g_cogCone = NULL, *g_cogCone2 = NULL;
 static GtkWidget *g_cogBand = NULL, *g_cogTipArc = NULL, *g_cogRootArc = NULL, *g_cogSnap = NULL;
 static const float g_cogSnapSteps[5] = { 0.0f, 0.125f, 0.25f, 0.5f, 1.0f };
 static GtkWidget *g_cogExtrude = NULL, *g_cogNotch = NULL, *g_cogInfo = NULL;
@@ -1329,6 +1330,8 @@ static void CogPanelApply(){
 	r.depth = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogDepth ) );
 	r.taper = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogTipW ) );
 	r.hole = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogBand ) );
+	r.cone = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogCone ) );
+	r.cone2 = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_cogCone2 ) );
 	{
 		const int sn = gtk_combo_box_get_active( GTK_COMBO_BOX( g_cogSnap ) );
 		r.snap = ( sn >= 0 && sn < 5 ) ? g_cogSnapSteps[sn] : 0.0f;
@@ -1436,6 +1439,8 @@ static void CogPanelBuild(){
 	g_cogDepth = CogSpin( vbox, _( "Tooth depth" ), 0.25, 4096, 0.5, 2, _( "How far the tip is from the root" ) );
 	g_cogTipW = CogSpin( vbox, _( "Tip taper %" ), 0, 90, 5, 0, _( "How much a tooth narrows towards its tip, as a percentage of its base width. 0 keeps the sides parallel, 90 is nearly a point. The base of a tooth is always as wide as the gap next to it, so the cog keeps the segments of the cylinder" ) );
 	g_cogBand = CogSpin( vbox, _( "Hole radius" ), 0, 4096, 1, 2, _( "A hole through the middle of this radius, for a tube or axle. 0 leaves the cog solid" ) );
+	g_cogCone = CogSpin( vbox, _( "Centre offset, top" ), -4096, 4096, 1, 2, _( "How much higher (positive) or lower (negative) the middle of the top end (the +axis side) is than its edge. From the middle (or the edge of the hole) out to the tips of the teeth the end slopes in a straight line. 0 leaves the end flat" ) );
+	g_cogCone2 = CogSpin( vbox, _( "Centre offset, bottom" ), -4096, 4096, 1, 2, _( "The same for the bottom end (the other side of the cog)" ) );
 	gtk_spin_button_set_snap_to_ticks( GTK_SPIN_BUTTON( g_cogTipW ), TRUE );
 	{
 		GtkWidget *sh = gtk_hbox_new( FALSE, 6 );
@@ -1503,6 +1508,8 @@ static void CogPanelFill( const cogRec_t &r ){
 	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogDepth ), r.depth );
 	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogTipW ), r.taper );
 	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogBand ), r.hole );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogCone ), r.cone );
+	gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_cogCone2 ), r.cone2 );
 	{
 		int at = 0;
 		for ( int i = 1; i < 5; i++ )

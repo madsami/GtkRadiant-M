@@ -41,6 +41,27 @@ void Patch_XMLParse( patchMesh_t *pPatch, xmlNodePtr surface ){
 			str = (char *)xmlGetProp( current, (xmlChar *)"height" );
 			pPatch->height = atoi( str );
 			xmlFree( str );
+			str = (char *)xmlGetProp( current, (xmlChar *)"segh" );
+			if ( str ) {
+				pPatch->segH = atoi( str );
+				xmlFree( str );
+				str = (char *)xmlGetProp( current, (xmlChar *)"segv" );
+				pPatch->segV = str ? atoi( str ) : 1;
+				if ( str ) {
+					xmlFree( str );
+				}
+			}
+			str = (char *)xmlGetProp( current, (xmlChar *)"cog" );
+			if ( str ) {
+				char *cs = strtok( str, " " );
+				pPatch->cogId = cs ? atoi( cs ) : 0;
+				for ( i = 0; i < COG_NPARAM; i++ )
+				{
+					cs = strtok( NULL, " " );
+					pPatch->cog[i] = cs ? (float)atof( cs ) : 0.0f;
+				}
+				xmlFree( str );
+			}
 
 			content = Q_StrDup( (char *)current->children->content );
 

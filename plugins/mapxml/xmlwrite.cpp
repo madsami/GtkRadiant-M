@@ -81,6 +81,22 @@ void Patch_XMLWrite( patchMesh_t *pPatch, xmlNodePtr surface ){
 	xmlSetProp( node, (xmlChar *)"width", (xmlChar *)buf );
 	sprintf( buf, "%i", pPatch->height );
 	xmlSetProp( node, (xmlChar *)"height", (xmlChar *)buf );
+	// segments of a segmented patch, and the numbers of a cog (cogId, cog[]; see cog.h): the clipboard (copy, paste,
+	// clone) goes through this format, so without them a copy would be an ordinary patch
+	if ( pPatch->segH > 0 ) {
+		sprintf( buf, "%i", pPatch->segH );
+		xmlSetProp( node, (xmlChar *)"segh", (xmlChar *)buf );
+		sprintf( buf, "%i", pPatch->segV );
+		xmlSetProp( node, (xmlChar *)"segv", (xmlChar *)buf );
+	}
+	if ( pPatch->cogId != 0 ) {
+		char cogbuf[COG_NPARAM * 20 + 16];
+		char *o = cogbuf;
+		o += sprintf( o, "%i", pPatch->cogId );
+		for ( i = 0; i < COG_NPARAM; i++ )
+			o += sprintf( o, " %.9g", pPatch->cog[i] );
+		xmlSetProp( node, (xmlChar *)"cog", (xmlChar *)cogbuf );
+	}
 }
 
 void Face_XMLWrite( face_t *face, xmlNodePtr surface, bool bAlternateTexdef = false ){

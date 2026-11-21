@@ -2297,7 +2297,9 @@ void Clipboard_CopyMap(){
 void Clipboard_PasteMap(){
 	if ( g_Clipboard.GetLength() > 0 ) {
 		g_Clipboard.Seek( 0, SEEK_SET );
+		Cog_ImportBegin();
 		Map_Import( &g_Clipboard, "xmap", true );
+		Cog_ImportEnd(); // a pasted or cloned cog is a cog of its own
 	}
 }
 

@@ -1027,6 +1027,7 @@ static GtkWidget *g_bevelSubdiv = NULL;
 static GtkWidget *g_bevelWidth = NULL;
 static GtkWidget *g_bevelInfo = NULL;
 static GtkWidget *g_bevelButton = NULL;
+static GtkWidget *g_bevelRemoveButton = NULL;
 static bool g_bevelListen = false;
 static float g_bevelFraction = 0.5f;    // 0 = the width was typed in, otherwise a portion of the maximum
 static float g_bevelLastMax = -1.0f;
@@ -1056,11 +1057,23 @@ static void BevelPanelLive(){
 	}
 	const float width = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_bevelWidth ) );
 	const int n = (int)gtk_range_get_value( GTK_RANGE( g_bevelSubdiv ) );
-	BevelRec_Edit( width, n );
+	if ( n < 1 ) {
+		BevelRec_Remove(); // no subdivisions: back to how it was before the bevel
+	}
+	else
+	{
+		BevelRec_Edit( width, n );
+	}
 }
 
 static void OnBevelApply( GtkWidget *widget, gpointer data ){
 	BevelPanel_Apply();
+}
+
+static void OnBevelRemove( GtkWidget *widget, gpointer data ){
+	if ( g_bevelMode == 2 ) {
+		BevelRec_Remove();
+	}
 }
 
 static void OnBevelPreset( GtkWidget *widget, gpointer data ){
@@ -1134,6 +1147,7 @@ static void BevelPanelBuild(){
 	gtk_scale_set_digits( GTK_SCALE( g_bevelSubdiv ), 0 );
 	gtk_scale_set_value_pos( GTK_SCALE( g_bevelSubdiv ), GTK_POS_RIGHT );
 	gtk_range_set_value( GTK_RANGE( g_bevelSubdiv ), 4 );
+	gtk_widget_set_tooltip_text( g_bevelSubdiv, _( "While editing a bevel, 0 removes it" ) );
 	gtk_widget_set_size_request( g_bevelSubdiv, 220, -1 );
 	gtk_box_pack_start( GTK_BOX( hbox ), g_bevelSubdiv, TRUE, TRUE, 0 );
 	gtk_widget_show( g_bevelSubdiv );
@@ -1167,6 +1181,11 @@ static void BevelPanelBuild(){
 	g_signal_connect( G_OBJECT( g_bevelButton ), "clicked", G_CALLBACK( OnBevelApply ), NULL );
 	gtk_box_pack_end( GTK_BOX( hbox ), g_bevelButton, FALSE, FALSE, 0 );
 	gtk_widget_show( g_bevelButton );
+	g_bevelRemoveButton = gtk_button_new_with_label( _( "Remove bevel" ) );
+	gtk_widget_set_tooltip_text( g_bevelRemoveButton, _( "Put the patches back as they were before the bevel (the same as setting the subdivisions to 0)" ) );
+	g_signal_connect( G_OBJECT( g_bevelRemoveButton ), "clicked", G_CALLBACK( OnBevelRemove ), NULL );
+	gtk_box_pack_end( GTK_BOX( hbox ), g_bevelRemoveButton, FALSE, FALSE, 0 );
+	gtk_widget_set_no_show_all( g_bevelRemoveButton, TRUE );
 
 	gtk_widget_add_events( g_bevelPanel, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK );
 	g_signal_connect( G_OBJECT( g_bevelPanel ), "enter-notify-event", G_CALLBACK( OnBevelEnter ), NULL );
@@ -1209,6 +1228,8 @@ static gboolean BevelPanelTick( gpointer data ){
 			g_bevelListen = false;
 			const float lo = maxW < 0.25f ? maxW : 0.25f;
 			gtk_spin_button_set_range( GTK_SPIN_BUTTON( g_bevelWidth ), lo, maxW > lo ? maxW : lo );
+			// editing a bevel, 0 subdivisions takes it away; a new bevel needs at least one
+			gtk_range_set_range( GTK_RANGE( g_bevelSubdiv ), mode == 2 ? 0 : 1, SEGPATCH_MAX_SEGS );
 			char text[128];
 			if ( mode == 2 ) {
 				gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_bevelWidth ), editW );
@@ -1218,6 +1239,9 @@ static gboolean BevelPanelTick( gpointer data ){
 			}
 			else
 			{
+				if ( gtk_range_get_value( GTK_RANGE( g_bevelSubdiv ) ) < 1 ) {
+					gtk_range_set_value( GTK_RANGE( g_bevelSubdiv ), 4 );
+				}
 				if ( g_bevelFraction > 0 && maxW > 0 ) {
 					gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_bevelWidth ), maxW * g_bevelFraction );
 				}
@@ -1231,6 +1255,7 @@ static gboolean BevelPanelTick( gpointer data ){
 			}
 			gtk_label_set_text( GTK_LABEL( g_bevelInfo ), text );
 			gtk_widget_set_visible( g_bevelButton, mode == 1 );
+			gtk_widget_set_visible( g_bevelRemoveButton, mode == 2 );
 			gtk_widget_set_sensitive( g_bevelButton, maxW > 0 );
 			g_bevelListen = true;
 			g_bevelMode = mode;

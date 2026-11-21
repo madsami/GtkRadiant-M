@@ -58,7 +58,7 @@ static bool Bevel_RimDegenerate( const bevelPt_t *a, int n ){
 	return true;
 }
 
-static bool Bevel_RimsMatch( const bevelPt_t *a, const bevelPt_t *b, int n, bool *reversed ){
+static bool Bevel_RimsMatchTol( const bevelPt_t *a, const bevelPt_t *b, int n, float tol, bool *reversed ){
 	for ( int dir = 0; dir < 2; dir++ )
 	{
 		bool ok = true;
@@ -66,7 +66,7 @@ static bool Bevel_RimsMatch( const bevelPt_t *a, const bevelPt_t *b, int n, bool
 		{
 			vec3_t d;
 			VectorSubtract( a[k].v, b[dir ? n - 1 - k : k].v, d );
-			if ( VectorLength( d ) > 0.5f ) {
+			if ( VectorLength( d ) > tol ) {
 				ok = false;
 			}
 		}
@@ -76,6 +76,10 @@ static bool Bevel_RimsMatch( const bevelPt_t *a, const bevelPt_t *b, int n, bool
 		}
 	}
 	return false;
+}
+
+static bool Bevel_RimsMatch( const bevelPt_t *a, const bevelPt_t *b, int n, bool *reversed ){
+	return Bevel_RimsMatchTol( a, b, n, 0.5f, reversed );
 }
 
 // every patch that can take part: the selected ones and the rest of the map
@@ -91,21 +95,45 @@ static void Bevel_Patches( std::vector<brush_t*> &out ){
 		}
 }
 
+// The box round the control points of a patch. The mins / maxs of the brush are not used for this: for a
+// patch they come from the stand-in brush it is built on, which does not always enclose the control points.
+static void Bevel_PatchBounds( const patchMesh_t *p, float *mn, float *mx ){
+	mn[0] = mn[1] = mn[2] = 99999.0f;
+	mx[0] = mx[1] = mx[2] = -99999.0f;
+	for ( int w = 0; w < p->width; w++ )
+		for ( int h = 0; h < p->height; h++ )
+			for ( int j = 0; j < 3; j++ )
+			{
+				const float f = p->ctrl[w][h].xyz[j];
+				if ( f < mn[j] ) {
+					mn[j] = f;
+				}
+				if ( f > mx[j] ) {
+					mx[j] = f;
+				}
+			}
+}
+
 // the other patch that has a border on top of this one, if any
-static bool Bevel_FindPartner( brush_t *A, int sa, brush_t **outB, int *outSb, bool *outRev ){
+static bool Bevel_FindPartnerTol( brush_t *A, int sa, brush_t **outB, int *outSb, bool *outRev, float tol ){
 	std::vector<brush_t*> list;
 	Bevel_Patches( list );
 	bevelPt_t ra[MAX_PATCH_WIDTH], rb[MAX_PATCH_WIDTH];
 	int na = Bevel_Rim( A->pPatch, sa, ra );
+	const float margin = tol > 1.0f ? tol : 1.0f;
+	float amin[3], amax[3];
+	Bevel_PatchBounds( A->pPatch, amin, amax );
 	for ( size_t j = 0; j < list.size(); j++ )
 	{
 		brush_t *B = list[j];
 		if ( B == A ) {
 			continue;
 		}
+		float bmin[3], bmax[3];
+		Bevel_PatchBounds( B->pPatch, bmin, bmax );
 		int k;
 		for ( k = 0; k < 3; k++ )
-			if ( A->mins[k] > B->maxs[k] + 1 || B->mins[k] > A->maxs[k] + 1 ) {
+			if ( amin[k] > bmax[k] + margin || bmin[k] > amax[k] + margin ) {
 				break;
 			}
 		if ( k < 3 ) {
@@ -115,7 +143,7 @@ static bool Bevel_FindPartner( brush_t *A, int sa, brush_t **outB, int *outSb, b
 		{
 			int nb = Bevel_Rim( B->pPatch, sb, rb );
 			bool rev;
-			if ( na == nb && Bevel_RimsMatch( ra, rb, na, &rev ) ) {
+			if ( na == nb && Bevel_RimsMatchTol( ra, rb, na, tol, &rev ) ) {
 				*outB = B;
 				*outSb = sb;
 				*outRev = rev;
@@ -124,6 +152,10 @@ static bool Bevel_FindPartner( brush_t *A, int sa, brush_t **outB, int *outSb, b
 		}
 	}
 	return false;
+}
+
+static bool Bevel_FindPartner( brush_t *A, int sa, brush_t **outB, int *outSb, bool *outRev ){
+	return Bevel_FindPartnerTol( A, sa, outB, outSb, outRev, 0.5f );
 }
 
 // the border as a polyline: every span of three control points is a quadratic Bezier curve
@@ -210,9 +242,311 @@ int BevelEdge_Count(){
 	return (int)g_bevelEdges.size();
 }
 
+// =============================================================================
+// Edge loops
+//
+// A picked edge can be followed round to the rest of its loop. The rule is the one of a regular quad
+// mesh: where an edge meets a vertex that has four edges (so four patches meet there), the loop goes
+// straight on into the opposite edge, the one that shares no patch with the edge it came along. A free
+// edge goes on into the one other free edge of the vertex, when that belongs to another patch (so the
+// outline of a row of patches is one loop, but a patch's own corner is not followed round). Anywhere
+// else (three or five edges, a T-junction in the middle of a border) the loop stops. A border that
+// closes on itself, like the ring of a cylinder, is a loop already.
+//
+// This is only run when an edge is double clicked (Alt+click twice on the same edge), and only when the
+// preference "Alt+click follows edge loops" is on. A single click picks the one edge, exactly as before.
+// Patches that were made separately seldom meet exactly, so here points count as the same when they are
+// within BEVEL_LOOP_TOL of each other, a little more than the pick itself allows.
+// =============================================================================
+
+#define BEVEL_LOOP_MAX 4096
+#define BEVEL_LOOP_TOL 1.5f
+
+static bool Bevel_SamePt( const float *a, const float *b ){
+	vec3_t d;
+	VectorSubtract( a, b, d );
+	return VectorLength( d ) <= BEVEL_LOOP_TOL;
+}
+
+// the edge as it is stored: a patch border and the border it shares with another patch, always the same way round
+static bevelEdge_t Bevel_MakeEdge( brush_t *A, int side ){
+	bevelEdge_t e = { A, side, NULL, 0, false };
+	if ( Bevel_FindPartnerTol( A, side, &e.b, &e.sideB, &e.reversed, BEVEL_LOOP_TOL ) && e.b < e.a ) {
+		bevelEdge_t s = { e.b, e.sideB, e.a, e.sideA, e.reversed };
+		e = s;
+	}
+	return e;
+}
+
+// the two ends of the border of the first patch of an edge
+static void Bevel_Ends( const bevelEdge_t &e, float *p0, float *p1 ){
+	bevelPt_t rim[MAX_PATCH_WIDTH];
+	const int n = Bevel_Rim( e.a->pPatch, e.sideA, rim );
+	VectorCopy( rim[0].v, p0 );
+	VectorCopy( rim[n - 1].v, p1 );
+}
+
+// every edge that has an end at the point v
+static void Bevel_EdgesAt( const std::vector<brush_t*> &patches, const float *v, std::vector<bevelEdge_t> &out ){
+	bevelPt_t rim[MAX_PATCH_WIDTH], other[MAX_PATCH_WIDTH];
+	for ( size_t i = 0; i < patches.size(); i++ )
+	{
+		brush_t *b = patches[i];
+		float bmin[3], bmax[3];
+		Bevel_PatchBounds( b->pPatch, bmin, bmax );
+		int k;
+		for ( k = 0; k < 3; k++ )
+			if ( v[k] < bmin[k] - BEVEL_LOOP_TOL || v[k] > bmax[k] + BEVEL_LOOP_TOL ) {
+				break;
+			}
+		if ( k < 3 ) {
+			continue;
+		}
+		patchMesh_t *p = b->pPatch;
+		for ( int side = 0; side < 4; side++ )
+		{
+			const int n = Bevel_Rim( p, side, rim );
+			if ( Bevel_RimDegenerate( rim, n ) ) {
+				continue;
+			}
+			if ( side == 1 || side == 3 ) {
+				// a ring: the last column / row is the first one again
+				bool rev;
+				const int n0 = Bevel_Rim( p, side - 1, other );
+				if ( n0 == n && Bevel_RimsMatch( rim, other, n, &rev ) && !rev ) {
+					continue;
+				}
+			}
+			if ( !Bevel_SamePt( rim[0].v, v ) && !Bevel_SamePt( rim[n - 1].v, v ) ) {
+				continue;
+			}
+			bevelEdge_t e = Bevel_MakeEdge( b, side );
+			bool known = false;
+			for ( size_t j = 0; j < out.size() && !known; j++ )
+				known = Bevel_SameEdge( out[j], e );
+			if ( !known ) {
+				out.push_back( e );
+			}
+		}
+	}
+}
+
+static bool Bevel_EdgeHasPatch( const bevelEdge_t &e, const brush_t *p ){
+	return e.a == p || e.b == p;
+}
+
+// do the two edges have a patch in common
+static bool Bevel_EdgesShare( const bevelEdge_t &x, const bevelEdge_t &y ){
+	return Bevel_EdgeHasPatch( y, x.a ) || ( x.b != NULL && Bevel_EdgeHasPatch( y, x.b ) );
+}
+
+// the direction an edge leaves the point v in, along its border; false if it has no length
+static bool Bevel_LeaveDir( const bevelEdge_t &e, const float *v, float *out ){
+	bevelPt_t rim[MAX_PATCH_WIDTH];
+	const int n = Bevel_Rim( e.a->pPatch, e.sideA, rim );
+	const bool atStart = Bevel_SamePt( rim[0].v, v );
+	for ( int k = 1; k < n; k++ )
+	{
+		const float *q = rim[atStart ? k : n - 1 - k].v;
+		vec3_t d;
+		VectorSubtract( q, v, d );
+		const float len = VectorLength( d );
+		if ( len > 0.5f ) {
+			VectorScale( d, 1.0f / len, out );
+			return true;
+		}
+	}
+	return false;
+}
+
+// The edge the loop goes on into, coming along cur to the point v. nAt is how many edges meet at v and
+// nCand how many of them could carry the loop on (for the message when it stops).
+static bool Bevel_NextAround( const std::vector<brush_t*> &patches, const bevelEdge_t &cur, const float *v, bevelEdge_t *next, int *nAt, int *nCand ){
+	std::vector<bevelEdge_t> at;
+	Bevel_EdgesAt( patches, v, at );
+	*nAt = (int)at.size();
+	*nCand = 0;
+	bool found = false;
+	for ( size_t i = 0; i < at.size(); i++ )
+		if ( Bevel_SameEdge( at[i], cur ) ) {
+			found = true;
+		}
+	if ( !found ) {
+		*nCand = -1; // the edge we came along is not among the edges found at its own end
+		return false;
+	}
+	const bool shared = cur.b != NULL;
+	std::vector<bevelEdge_t> cand;
+	for ( size_t i = 0; i < at.size(); i++ )
+	{
+		if ( Bevel_SameEdge( at[i], cur ) || Bevel_EdgesShare( cur, at[i] ) ) {
+			continue; // the opposite edge has no patch in common with this one
+		}
+		if ( !shared && at[i].b != NULL ) {
+			continue; // from a free edge only into another free edge
+		}
+		cand.push_back( at[i] );
+	}
+	*nCand = (int)cand.size();
+	if ( cand.size() == 1 ) {
+		*next = cand[0];
+		return true;
+	}
+	if ( shared || cand.empty() ) {
+		return false;
+	}
+	// A free edge with several free edges to choose from (a seam whose two sides do not match counts as
+	// two free edges): the one that carries straight on, if it clearly does.
+	float dc[3];
+	if ( !Bevel_LeaveDir( cur, v, dc ) ) {
+		return false;
+	}
+	int best = -1;
+	float bestS = -2.0f, second = -2.0f;
+	for ( size_t i = 0; i < cand.size(); i++ )
+	{
+		float d[3];
+		if ( !Bevel_LeaveDir( cand[i], v, d ) ) {
+			continue;
+		}
+		const float s = -DotProduct( dc, d ); // 1 = straight on, 0 = a right angle
+		if ( s > bestS ) {
+			second = bestS;
+			bestS = s;
+			best = (int)i;
+		}
+		else if ( s > second ) {
+			second = s;
+		}
+	}
+	if ( best >= 0 && bestS >= 0.5f && bestS - second >= 0.15f ) {
+		*next = cand[best];
+		return true;
+	}
+	return false;
+}
+
+// for the message when a loop ends: how far away the nearest border end is that just misses the point v
+static float Bevel_NearMiss( const std::vector<brush_t*> &patches, const float *v ){
+	float best = -1.0f;
+	bevelPt_t rim[MAX_PATCH_WIDTH];
+	for ( size_t i = 0; i < patches.size(); i++ )
+		for ( int side = 0; side < 4; side++ )
+		{
+			const int n = Bevel_Rim( patches[i]->pPatch, side, rim );
+			for ( int e = 0; e < 2; e++ )
+			{
+				vec3_t d;
+				VectorSubtract( rim[e ? n - 1 : 0].v, v, d );
+				const float len = VectorLength( d );
+				if ( len > BEVEL_LOOP_TOL && len < 16.0f && ( best < 0 || len < best ) ) {
+					best = len;
+				}
+			}
+		}
+	return best;
+}
+
+// the edge and the rest of its loop. The first one of the loop is the edge as the loop sees it, which
+// may have found a partner border a little further off than the plain pick does.
+static void Bevel_FollowLoop( const bevelEdge_t &picked, std::vector<bevelEdge_t> &loop ){
+	loop.clear();
+	const bevelEdge_t start = Bevel_MakeEdge( picked.a, picked.sideA );
+	loop.push_back( start );
+	float s0[3], s1[3];
+	Bevel_Ends( start, s0, s1 );
+	if ( Bevel_SamePt( s0, s1 ) ) {
+		return; // closes on itself
+	}
+	std::vector<brush_t*> patches;
+	Bevel_Patches( patches );
+	bool closed = false;
+	for ( int dir = 0; dir < 2 && !closed; dir++ )
+	{
+		bevelEdge_t cur = start;
+		float v[3];
+		VectorCopy( dir == 0 ? s1 : s0, v );
+		for ( int guard = 0; guard < BEVEL_LOOP_MAX; guard++ )
+		{
+			bevelEdge_t next;
+			int nAt, nCand;
+			if ( !Bevel_NextAround( patches, cur, v, &next, &nAt, &nCand ) ) {
+				const float miss = Bevel_NearMiss( patches, v );
+				if ( nCand < 0 ) {
+					float c0[3], c1[3];
+					Bevel_Ends( cur, c0, c1 );
+					vec3_t d0, d1;
+					VectorSubtract( c0, v, d0 );
+					VectorSubtract( c1, v, d1 );
+					bool listed = false;
+					for ( size_t i = 0; i < patches.size() && !listed; i++ )
+						listed = patches[i] == cur.a;
+					Sys_Printf( "Edge loop ends at ( %.0f %.0f %.0f ): the edge itself was not found there (side %d, ends %.1f / %.1f away, patch %s, %d patches)\n",
+								v[0], v[1], v[2], cur.sideA, VectorLength( d0 ), VectorLength( d1 ), listed ? "listed" : "NOT listed", (int)patches.size() );
+				}
+				else if ( miss > 0 ) {
+					Sys_Printf( "Edge loop ends at ( %.0f %.0f %.0f ): %d edges meet there, %d could carry it on; a border end just misses it by %.1f\n",
+								v[0], v[1], v[2], nAt, nCand, miss );
+				}
+				else
+				{
+					Sys_Printf( "Edge loop ends at ( %.0f %.0f %.0f ): %d edges meet there, %d could carry it on\n",
+								v[0], v[1], v[2], nAt, nCand );
+				}
+				break;
+			}
+			if ( Bevel_SameEdge( next, start ) ) {
+				closed = true; // all the way round
+				break;
+			}
+			bool seen = false;
+			for ( size_t i = 0; i < loop.size() && !seen; i++ )
+				seen = Bevel_SameEdge( loop[i], next );
+			if ( seen ) {
+				break;
+			}
+			loop.push_back( next );
+			float n0[3], n1[3];
+			Bevel_Ends( next, n0, n1 );
+			if ( Bevel_SamePt( n0, v ) && Bevel_SamePt( n1, v ) ) {
+				break;
+			}
+			// pick the far end first: VectorCopy repeats its first argument for every coordinate, and v changes as it goes
+			const float *farEnd = Bevel_SamePt( n0, v ) ? n1 : n0;
+			float nv[3];
+			VectorCopy( farEnd, nv );
+			VectorCopy( nv, v );
+			cur = next;
+		}
+	}
+}
+
+// the last pick, to tell a double click (a second pick of the same edge straight after the first)
+static bevelEdge_t g_lastPickEdge;
+static bool g_lastPickValid = false;
+static double g_lastPickTime = 0;
+static std::vector<bevelEdge_t> g_picksBeforeLast;     // the picked edges as they were before that pick
+
+static double Bevel_NowMs(){
+	GTimeVal tv;
+	g_get_current_time( &tv );
+	return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
+}
+
+static double Bevel_DoubleClickMs(){
+	gint ms = 400;
+	GtkSettings *s = gtk_settings_get_default();
+	if ( s ) {
+		g_object_get( s, "gtk-double-click-time", &ms, NULL );
+	}
+	return ms;
+}
+
 // Alt+click: pick the patch border the ray passes nearest to, whether another patch continues from
 // it or not. additive (Ctrl+Alt) adds it to the picked ones, or takes it out again if it is already
-// one. False if no border is near the ray, so the click can do what it did before.
+// one. A second click on the same edge straight after the first (a double click) picks the whole loop
+// it is on instead (see the edge loops above). False if no border is near the ray, so the click can do
+// what it did before.
 bool BevelEdge_Pick( vec3_t org, vec3_t dir, bool additive, bool camera ){
 	float epsilon = 0, divergence = 0;
 	if ( camera ) {
@@ -226,9 +560,15 @@ bool BevelEdge_Pick( vec3_t org, vec3_t dir, bool additive, bool camera ){
 	std::vector<brush_t*> patches;
 	Bevel_Patches( patches );
 
-	brush_t *bestBrush = NULL;
-	int bestSide = -1;
-	float bestScore = 1e30f;
+	// Every border segment the ray passes close enough to. In the camera view the nearest ones win (below),
+	// since a border far back in the scene passes just as close to the ray, and with a bigger tolerance.
+	struct pickCand_t
+	{
+		brush_t *b;
+		int side;
+		float score, t;
+	};
+	std::vector<pickCand_t> cands;
 	bevelPt_t rim[MAX_PATCH_WIDTH], other[MAX_PATCH_WIDTH];
 	for ( size_t i = 0; i < patches.size(); i++ )
 	{
@@ -259,18 +599,32 @@ bool BevelEdge_Pick( vec3_t org, vec3_t dir, bool additive, bool camera ){
 				if ( dist > tol ) {
 					continue;
 				}
-				const float score = dist / tol + t * 1e-6f; // the closest to the ray, the nearer one on a tie
-				if ( score < bestScore ) {
-					bestScore = score;
-					bestBrush = patches[i];
-					bestSide = side;
-				}
+				const pickCand_t c = { patches[i], side, dist / tol + t * 1e-6f, t }; // the closest to the ray, the nearer one on a tie
+				cands.push_back( c );
 			}
 		}
 	}
-	if ( bestBrush == NULL ) {
+	if ( cands.empty() ) {
 		return false;
 	}
+	float tmin = cands[0].t;
+	for ( size_t i = 1; i < cands.size(); i++ )
+		if ( cands[i].t < tmin ) {
+			tmin = cands[i].t;
+		}
+	// In the camera view only what is about as near as the nearest hit counts (a tenth further, or a few
+	// units): the border in front, not one behind it at the same spot on the screen. Among those the one
+	// the ray passes closest to. In the XY view there is no depth to go by, so it is the closest overall.
+	const float depthLimit = camera ? tmin + ( tmin * 0.1f > 8.0f ? tmin * 0.1f : 8.0f ) : 1e30f;
+	brush_t *bestBrush = NULL;
+	int bestSide = -1;
+	float bestScore = 1e30f;
+	for ( size_t i = 0; i < cands.size(); i++ )
+		if ( cands[i].t <= depthLimit && cands[i].score < bestScore ) {
+			bestScore = cands[i].score;
+			bestBrush = cands[i].b;
+			bestSide = cands[i].side;
+		}
 
 	bevelEdge_t e = { bestBrush, bestSide, NULL, 0, false };
 	if ( Bevel_FindPartner( bestBrush, bestSide, &e.b, &e.sideB, &e.reversed ) && e.b < e.a ) {
@@ -279,25 +633,76 @@ bool BevelEdge_Pick( vec3_t org, vec3_t dir, bool additive, bool camera ){
 		e = s;
 	}
 
+	// A double click on an edge picks its whole loop. The second click starts from the picks as they were
+	// before the first one, so Ctrl+Alt double click adds the loop (or takes it out if it was picked).
+	// With the preference off none of this happens and every click picks one edge.
+	bool dbl = false;
+	if ( g_PrefsDlg.m_bBevelLoops ) {
+		const double now = Bevel_NowMs();
+		dbl = g_lastPickValid && Bevel_SameEdge( g_lastPickEdge, e ) && now - g_lastPickTime <= Bevel_DoubleClickMs();
+		if ( dbl ) {
+			g_bevelEdges = g_picksBeforeLast;
+			g_lastPickValid = false;
+		}
+		else
+		{
+			g_picksBeforeLast = g_bevelEdges;
+			g_lastPickEdge = e;
+			g_lastPickTime = now;
+			g_lastPickValid = true;
+		}
+	}
+
+	std::vector<bevelEdge_t> loop;
+	if ( dbl ) {
+		Bevel_FollowLoop( e, loop );
+	}
+	else
+	{
+		loop.push_back( e );
+	}
+	const bevelEdge_t key = loop[0]; // the edge the click was on, as it is stored
+
 	bool removed = false;
 	if ( additive ) {
 		for ( size_t i = 0; i < g_bevelEdges.size(); i++ )
-			if ( Bevel_SameEdge( g_bevelEdges[i], e ) ) {
-				g_bevelEdges.erase( g_bevelEdges.begin() + i );
-				removed = true;
+			if ( Bevel_SameEdge( g_bevelEdges[i], key ) ) {
+				removed = true; // already picked: it is taken out, with the rest of its loop
 				break;
 			}
+		if ( removed ) {
+			for ( size_t j = 0; j < loop.size(); j++ )
+				for ( size_t i = 0; i < g_bevelEdges.size(); i++ )
+					if ( Bevel_SameEdge( g_bevelEdges[i], loop[j] ) ) {
+						g_bevelEdges.erase( g_bevelEdges.begin() + i );
+						break;
+					}
+		}
 	}
 	else
 	{
 		g_bevelEdges.clear();
 	}
 	if ( !removed ) {
-		g_bevelEdges.push_back( e );
+		for ( size_t j = 0; j < loop.size(); j++ )
+		{
+			bool known = false;
+			for ( size_t i = 0; i < g_bevelEdges.size() && !known; i++ )
+				known = Bevel_SameEdge( g_bevelEdges[i], loop[j] );
+			if ( !known ) {
+				g_bevelEdges.push_back( loop[j] );
+			}
+		}
 	}
-	Sys_Printf( "Edge %s: %s, %d control points (%d picked)\n", removed ? "taken out" : "picked",
-				e.b ? "shared with another patch" : "free edge",
-				( e.sideA < 2 ) ? e.a->pPatch->height : e.a->pPatch->width, (int)g_bevelEdges.size() );
+	if ( loop.size() > 1 ) {
+		Sys_Printf( "Edge loop %s: %d edges (%d picked)\n", removed ? "taken out" : "picked", (int)loop.size(), (int)g_bevelEdges.size() );
+	}
+	else
+	{
+		Sys_Printf( "Edge %s: %s, %d control points (%d picked)\n", removed ? "taken out" : "picked",
+					e.b ? "shared with another patch" : "free edge",
+					( e.sideA < 2 ) ? e.a->pPatch->height : e.a->pPatch->width, (int)g_bevelEdges.size() );
+	}
 	Sys_UpdateWindows( W_XY | W_CAMERA );
 	return true;
 }
@@ -845,4 +1250,63 @@ int BevelRec_Edit( float width, int nsub ){
 	UpdatePatchInspector();
 	Sys_UpdateWindows( W_ALL );
 	return done;
+}
+
+// Takes the selected bevels away: both patches go back to how they were before the bevel, the strip is
+// deleted, and the edge is picked again, so the bevel can be made again from the panel. One undo step.
+int BevelRec_Remove(){
+	std::vector<bevelRec_t> todo;
+	for ( size_t i = 0; i < g_bevelRecs.size(); i++ )
+		if ( Bevel_RecValid( g_bevelRecs[i] ) && Bevel_IsSelected( g_bevelRecs[i].strip ) ) {
+			todo.push_back( g_bevelRecs[i] );
+		}
+	if ( todo.empty() ) {
+		return 0;
+	}
+	for ( size_t i = 0; i < g_bevelRecs.size(); )
+	{
+		bool gone = false;
+		for ( size_t j = 0; j < todo.size() && !gone; j++ )
+			gone = g_bevelRecs[i].strip == todo[j].strip;
+		if ( gone ) {
+			g_bevelRecs.erase( g_bevelRecs.begin() + i );
+		}
+		else
+		{
+			i++;
+		}
+	}
+
+	Undo_Start( "remove bevel" );
+	for ( size_t i = 0; i < todo.size(); i++ )
+	{
+		const bevelRec_t &r = todo[i];
+		Undo_AddBrush( r.e.a );
+		Undo_AddBrush( r.e.b );
+		Bevel_Restore( r.e.a->pPatch, r.origA );
+		Bevel_Restore( r.e.b->pPatch, r.origB );
+		Patch_Rebuild( r.e.a->pPatch );
+		Patch_Rebuild( r.e.b->pPatch );
+		Undo_EndBrush( r.e.a );
+		Undo_EndBrush( r.e.b );
+	}
+
+	// delete the strips the way Delete does it
+	Select_Deselect( true );
+	for ( size_t i = 0; i < todo.size(); i++ )
+		Select_Brush( todo[i].strip );
+	Undo_AddBrushList( &selected_brushes );
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		Undo_AddEntity( b->owner );
+	Select_Delete();
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+
+	g_bevelEdges.clear();
+	for ( size_t i = 0; i < todo.size(); i++ )
+		g_bevelEdges.push_back( todo[i].e );
+	g_lastPickValid = false;
+	UpdatePatchInspector();
+	Sys_UpdateWindows( W_ALL );
+	return (int)todo.size();
 }

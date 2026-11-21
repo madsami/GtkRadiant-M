@@ -725,6 +725,7 @@ bool m_bStartOnPrimMon;
 #endif
 
 bool m_bPatchBBoxSelect;
+bool m_bBevelLoops;     // Alt+click on a patch border picks the whole edge loop (off: just the one edge)
 
 // RR2DO2: latched data, for settings that require a restart. We don't want to set
 // these directly in case users set them under preferences and then continue working

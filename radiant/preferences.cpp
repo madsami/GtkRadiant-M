@@ -158,6 +158,7 @@
 #define GLPOINTWORKAROUND_KEY   "GlPointWorkaround"     // Gef: Workaround for broken Kyro * gl driver 25-aug-2001
 #define WHEELINC_KEY            "WheelMouseInc"
 #define PATCHBBOXSEL_KEY        "PatchBBoxSel"
+#define BEVELLOOPS_KEY          "BevelEdgeLoops"
 #define LASTLIGHTINTENSITY_KEY  "LastLightIntensity"
 #define CUSTOMSHADEREDITOR_KEY        "UseCustomShaderEditor"
 #define CUSTOMSHADEREDITORCOMMAND_KEY "CustomShaderEditorCommand"
@@ -2475,6 +2476,12 @@ void PrefsDlg::BuildDialog(){
 	gtk_widget_show( check );
 	AddDialogData( check, &m_bPatchBBoxSelect, DLG_CHECK_BOOL );
 
+	// Alt+click on a patch border follows the edge loop
+	check = gtk_check_button_new_with_label( _( "Alt+click follows edge loops" ) );
+	gtk_box_pack_start( GTK_BOX( vbox ), check, FALSE, FALSE, 0 );
+	gtk_widget_show( check );
+	AddDialogData( check, &m_bBevelLoops, DLG_CHECK_BOOL );
+
 	// Rotation increment
 	// container
 	table = gtk_table_new( 2, 3, FALSE );
@@ -3174,6 +3181,7 @@ void PrefsDlg::LoadPrefs(){
 	mLocalPrefs.GetPref( TARGETFIX_KEY,          &m_bDoTargetFix,                TRUE );
 	mLocalPrefs.GetPref( WHEELINC_KEY,           &m_nWheelInc,                   64 );
 	mLocalPrefs.GetPref( PATCHBBOXSEL_KEY,       &m_bPatchBBoxSelect,            FALSE );
+	mLocalPrefs.GetPref( BEVELLOOPS_KEY,         &m_bBevelLoops,                 TRUE );
 
 	// window positioning
 	mLocalPrefs.GetPref( ENTITYSPLIT1_KEY,       &mWindowInfo.nEntitySplit1,     -1 );

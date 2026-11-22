@@ -27,6 +27,7 @@
 
 #include "stdafx.h"
 #include "seatcut.h"
+#include "rotframe.h"
 #include <gtk/gtk.h>
 #include <GL/gl.h>
 #include "glwidget.h"
@@ -1719,6 +1720,7 @@ void CamWnd::Cam_Draw(){
 	qglEnable( GL_DEPTH_TEST );
 	BevelEdge_Draw();
 	Seat_Draw();
+	RotFrame_DrawPivot();
 	DrawPathLines();
 
 	if ( g_qeglobals.d_pointfile_display_list ) {

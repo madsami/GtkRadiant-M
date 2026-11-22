@@ -56,6 +56,17 @@ void Patch_XMLParse( patchMesh_t *pPatch, xmlNodePtr surface ){
 				pPatch->groupId = atoi( str );
 				xmlFree( str );
 			}
+			str = (char *)xmlGetProp( current, (xmlChar *)"frm" );
+			if ( str ) {
+				char *fs = strtok( str, " " );
+				for ( int k = 0; k < 9 && fs; k++ )
+				{
+					pPatch->frameR[k] = (float)atof( fs );
+					fs = strtok( NULL, " " );
+				}
+				pPatch->hasFrame = 1;
+				xmlFree( str );
+			}
 			str = (char *)xmlGetProp( current, (xmlChar *)"cog" );
 			if ( str ) {
 				char *cs = strtok( str, " " );

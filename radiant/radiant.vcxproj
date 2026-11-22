@@ -184,6 +184,7 @@
     <ClCompile Include="bevel.cpp" />
     <ClCompile Include="cog.cpp" />
     <ClCompile Include="patchgroup.cpp" />
+    <ClCompile Include="rotframe.cpp" />
     <ClCompile Include="seatcut.cpp" />
     <ClCompile Include="parse.cpp" />
     <ClCompile Include="patchdialog.cpp" />

@@ -253,6 +253,15 @@ void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 			GetToken( false );
 			pPatch->groupId = atoi( token );
 		}
+		else if ( !strcmp( token, "frm" ) ) {
+			// rotation frame (see rotframe.h), put here by Segpatch_Preprocess from "//@frm": the 9 numbers of the rotation
+			for ( int k = 0; k < 9; k++ )
+			{
+				GetToken( false );
+				pPatch->frameR[k] = (float)atof( token );
+			}
+			pPatch->hasFrame = 1;
+		}
 		else if ( !strcmp( token, "seat" ) ) {
 			// seat cut (see seatcut.h), put here by Segpatch_Preprocess: the cutter id of this patch, the number of hulls,
 			// then for every hull its cutter id, its plane count and the planes
@@ -680,6 +689,9 @@ static char* Segpatch_Preprocess( const char *buf ){
 	// The same for a patch in a group: "//@grp <id>" becomes "grp <id>" in front of the cog's numbers.
 	char grpText[32];
 	bool haveGrp = false;
+	// and the rotation frame ( "//@frm <9 numbers>" becomes "frm <9 numbers>" )
+	const char *frmText = NULL;
+	size_t frmLen = 0;
 	// the same for the seat cut of a patch ( "//@seat seat <numbers>" ), see seatcut.h
 	const char *seatText = NULL;
 	size_t seatLen = 0;
@@ -692,6 +704,15 @@ static char* Segpatch_Preprocess( const char *buf ){
 		if ( !skipping && !strncmp( p, "//@grp ", 7 ) ) {
 			sprintf( grpText, "grp %i", atoi( p + 7 ) );
 			haveGrp = true;
+			p = next;
+			continue;
+		}
+		if ( !skipping && !strncmp( p, "//@frm ", 7 ) ) {
+			frmText = p + 7;
+			const char *e = nl ? nl : p + strlen( p );
+			while ( e > frmText && ( e[-1] == '\r' || e[-1] == ' ' ) )
+				e--;
+			frmLen = e - frmText;
 			p = next;
 			continue;
 		}
@@ -714,7 +735,7 @@ static char* Segpatch_Preprocess( const char *buf ){
 			p = next;
 			continue;
 		}
-		if ( !skipping && ( cogText || seatText || haveGrp ) ) {
+		if ( !skipping && ( cogText || seatText || haveGrp || frmText ) ) {
 			const char *q = p;
 			while ( *q == ' ' || *q == '\t' )
 				q++;
@@ -742,6 +763,13 @@ static char* Segpatch_Preprocess( const char *buf ){
 					o += gl;
 					*o++ = ' ';
 				}
+				if ( frmText ) {
+					memcpy( o, "frm ", 4 );
+					o += 4;
+					memcpy( o, frmText, frmLen );
+					o += frmLen;
+					*o++ = ' ';
+				}
 				if ( cogText ) {
 					memcpy( o, cogText, cogLen );
 					o += cogLen;
@@ -755,6 +783,7 @@ static char* Segpatch_Preprocess( const char *buf ){
 				memcpy( o, close, next - close );
 				o += next - close;
 				cogText = NULL;
+				frmText = NULL;
 				seatText = NULL;
 				haveGrp = false;
 				p = next;

@@ -68,6 +68,7 @@ patchMesh_t* Patch_Alloc(){
 	pPatch->segH = pPatch->segV = 0;
 	pPatch->cogId = 0;
 	pPatch->groupId = 0;
+	pPatch->hasFrame = 0;
 	pPatch->seatId = pPatch->seatCount = pPatch->seatCanCut = 0;
 
 	int i;
@@ -89,6 +90,7 @@ patchMesh_t* MakeNewPatch(){
 	pm->segH = pm->segV = 0;
 	pm->cogId = 0;
 	pm->groupId = 0;
+	pm->hasFrame = 0;
 	pm->seatId = pm->seatCount = pm->seatCanCut = 0;
 
 	return pm;

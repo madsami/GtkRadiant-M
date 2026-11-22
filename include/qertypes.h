@@ -456,6 +456,11 @@ typedef struct {
 	// deselecting a patch of a group selects or deselects all of them, so the group moves as one object.
 	// Saved in //@grp comment lines.
 	int groupId;
+	// rotation frame (see rotframe.h in the editor): hasFrame = 1 when the patch has been turned off the grid by a
+	// rotation. frameR is the total rotation (3x3, row by row, new = R * old) that took it from its straight pose to
+	// where it is now, so turning the world by the inverse straightens it again. Saved in //@frm comment lines.
+	int hasFrame;
+	float frameR[9];
 	// seat cut (see seatcut.h in the editor): seatId > 0 marks a patch of a cutter (every patch of one cutter has the same
 	// id). seat[] holds the hulls of the cutters that cut a hole into this patch; the hole is applied when the patch is
 	// drawn or saved (see SegPatch_Cut in segpatch.h). The hulls are worked out again whenever a cutter or a host moves.

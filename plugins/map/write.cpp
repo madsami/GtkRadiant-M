@@ -104,6 +104,12 @@ static bool SegPatch_Write( patchMesh_t *p, IDataStream *out ){
 	if ( p->groupId != 0 ) {
 		out->printf( "//@grp %i\n", p->groupId ); // see Primitive_Write
 	}
+	if ( p->hasFrame ) {
+		out->printf( "//@frm " ); // the rotation frame, see Primitive_Write
+		for ( int c = 0; c < 9; c++ )
+			Float_Write( p->frameR[c], out );
+		out->printf( "\n" );
+	}
 	if ( p->cogId != 0 ) {
 		// the cog's id and numbers (see Primitive_Write); Map_Read puts them into the size line of the cage
 		out->printf( "//@cog %i ", p->cogId );
@@ -267,6 +273,13 @@ void Primitive_Write( brush_t *pBrush, IDataStream *out ){
 		if ( pBrush->patchBrush && pBrush->pPatch->groupId != 0 && g_MapVersion == MAPVERSION_Q3 ) {
 			// a patch in a group: its id, in a comment line the compilers ignore (Map_Read puts it back)
 			out->printf( "//@grp %i\n", pBrush->pPatch->groupId );
+		}
+		if ( pBrush->patchBrush && pBrush->pPatch->hasFrame && g_MapVersion == MAPVERSION_Q3 ) {
+			// a patch turned off the grid: the 9 numbers of its rotation (rotframe.h), in a comment line the compilers ignore
+			out->printf( "//@frm " );
+			for ( int c = 0; c < 9; c++ )
+				Float_Write( pBrush->pPatch->frameR[c], out );
+			out->printf( "\n" );
 		}
 		if ( pBrush->patchBrush && pBrush->pPatch->cogId != 0 && g_MapVersion == MAPVERSION_Q3 ) {
 			// a patch of a cog: the id and the cog's numbers, in a comment line the compilers ignore.

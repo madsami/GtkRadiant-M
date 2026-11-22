@@ -23,6 +23,7 @@
 #include <assert.h>
 #include <glib/gi18n.h>
 #include "winding.h"
+#include "rotframe.h"
 #include <limits.h>
 #include "filters.h"
 
@@ -3334,10 +3335,9 @@ void Brush_Move( brush_t *b, const vec3_t move, bool bSnap ){
 
 	// PGM - keep the origin vector up to date on fixed size entities.
 	if ( b->owner->eclass->fixedsize ) {
-		char text[64];
+		char text[96];
 		VectorAdd( b->owner->origin, move, b->owner->origin );
-		sprintf( text, "%i %i %i",
-				 (int)b->owner->origin[0], (int)b->owner->origin[1], (int)b->owner->origin[2] );
+		RotFrame_FormatVec( text, b->owner->origin ); // not cut down to whole units: a rotated entity stays where it is
 		SetKeyValue( b->owner, "origin", text );
 		//VectorAdd(b->maxs, b->mins, b->owner->origin);
 		//VectorScale(b->owner->origin, 0.5, b->owner->origin);

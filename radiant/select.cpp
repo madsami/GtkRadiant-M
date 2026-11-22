@@ -24,6 +24,7 @@
 #include <assert.h>
 #include "filters.h"
 #include "patchgroup.h"
+#include "rotframe.h"
 
 // externs
 CPtrArray g_SelectedFaces;
@@ -710,11 +711,13 @@ void Select_ApplyMatrix( bool bSnap, bool bRotation, int nAxis, float fDeg ){ //
 			for ( j = 0 ; j < 3 ; j++ )
 				b->owner->origin[j] = DotProduct( temp, select_matrix[j] ) + select_origin[j];
 
-			// update the origin key
-			char text[64];
-			sprintf( text, "%i %i %i",
-					 (int)b->owner->origin[0], (int)b->owner->origin[1], (int)b->owner->origin[2] );
+			// update the origin key ( with its decimals: a rotated entity is not snapped )
+			char text[96];
+			RotFrame_FormatVec( text, b->owner->origin );
 			SetKeyValue( b->owner, "origin", text );
+			if ( bRotation ) {
+				RotFrame_EntityRotated( b->owner, select_matrix ); // it faces the new way too
+			}
 
 			/*\todo remove brush-based bounding box for fixedsize entities */
 			VectorSubtract( b->owner->origin, tmporigin, temp );
@@ -734,6 +737,15 @@ void Select_ApplyMatrix( bool bSnap, bool bRotation, int nAxis, float fDeg ){ //
 			}
 			// NOTE: does not clamp points to integers
 			Patch_ApplyMatrix( b->pPatch, select_origin, select_matrix, false );
+			if ( !( ( g_qeglobals.d_select_mode == sel_curvepoint && g_qeglobals.d_num_move_points != 0 ) || g_bPatchBendMode ) ) {
+				// the whole patch was transformed: it remembers how far it was turned (a mirror forgets it)
+				if ( bRotation ) {
+					RotFrame_PatchRotated( b->pPatch, select_origin, select_matrix );
+				}
+				else{
+					RotFrame_PatchMirrored( b->pPatch );
+				}
+			}
 		}
 		else
 		{

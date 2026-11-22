@@ -485,7 +485,7 @@ bool Patch_SegGridSize( patchMesh_t *p, int *U, int *V );
 const float* Patch_SegGridXYZ( patchMesh_t *p, int ui, int vi );
 void BevelPanel_Apply();
 float BevelEdge_MaxWidth();
-brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub );
+brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub, bool *bridge = NULL );
 int BevelRec_Edit( float width, int nsub );
 int BevelRec_Remove();
 // the bevel records follow a rotation of the patches they belong to (Select_ApplyMatrix)

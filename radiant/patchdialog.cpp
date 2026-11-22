@@ -1395,6 +1395,7 @@ static gboolean BevelPanelTick( gpointer data ){
 	}
 	// what the panel is for right now: picked edges (a new bevel) or a selected bevel (edit it)
 	int mode = 0, editN = 0;
+	bool editBridge = false; // the selected strip lies between two loops (nothing was cut): only its subdivisions can be set
 	bool bridge = false; // picked edges are two loops with nothing between them: Bevel makes a strip between them
 	float maxW = 0, editW = 0;
 	brush_t *strip = NULL;
@@ -1406,7 +1407,7 @@ static gboolean BevelPanelTick( gpointer data ){
 	}
 	else
 	{
-		strip = BevelRec_Selected( &editW, &maxW, &editN );
+		strip = BevelRec_Selected( &editW, &maxW, &editN, &editBridge );
 		if ( strip ) {
 			mode = 2;
 		}
@@ -1432,7 +1433,13 @@ static gboolean BevelPanelTick( gpointer data ){
 				gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_bevelWidth ), editW );
 				gtk_range_set_value( GTK_RANGE( g_bevelSubdiv ), editN );
 				g_bevelFraction = 0;
-				sprintf( text, "Editing this bevel (up to %.2f wide)", maxW );
+				if ( editBridge ) {
+					sprintf( text, "Editing this strip between two loops (subdivisions only)" );
+				}
+				else
+				{
+					sprintf( text, "Editing this bevel (up to %.2f wide)", maxW );
+				}
 			}
 			else
 			{
@@ -1454,6 +1461,7 @@ static gboolean BevelPanelTick( gpointer data ){
 				}
 			}
 			gtk_label_set_text( GTK_LABEL( g_bevelInfo ), text );
+				gtk_widget_set_sensitive( g_bevelWidth, !( mode == 2 && editBridge ) );
 			gtk_widget_set_visible( g_bevelButton, mode == 1 );
 			gtk_widget_set_visible( g_bevelRemoveButton, mode == 2 );
 			gtk_widget_set_sensitive( g_bevelButton, maxW > 0 || bridge );

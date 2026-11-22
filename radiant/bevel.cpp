@@ -1211,7 +1211,8 @@ struct bevelRec_t
 	int gen;                // which batch of bevels it was made with; a later one may be made on the strips of an earlier one
 	bool inv;               // the rows of the strip run from the second patch to the first (the strip was turned over)
 	float snap;             // the grid the borders of the cut were put on when it was made (0: not at all)
-	bevelRec_t() : strip( NULL ), width( 0 ), maxW( 0 ), nsub( 0 ), undoId( 0 ), gen( 0 ), inv( false ), snap( 0 ){
+	bool bridge;            // a strip made by Bridge Edge Loops or by the Bevel button on two loops: nothing was cut, only its subdivisions can be set
+	bevelRec_t() : strip( NULL ), width( 0 ), maxW( 0 ), nsub( 0 ), undoId( 0 ), gen( 0 ), inv( false ), snap( 0 ), bridge( false ){
 		cap[0] = cap[1] = NULL;
 		memset( v0, 0, sizeof( v0 ) );
 	}
@@ -3232,6 +3233,24 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 	return true;
 }
 
+// a strip between two borders that was not cut from anything: it is remembered so that its subdivisions can be set
+static void Bevel_AddBridgeRecord( brush_t *strip, brush_t *X, int sx, brush_t *Y, int sy, int gen, int undoId ){
+	bevelRec_t r;
+	const bevelEdge_t e = { X, sx, Y, sy, false };
+	r.e = e;
+	r.strip = strip;
+	r.bridge = true;
+	r.gen = gen;
+	r.undoId = undoId;
+	r.nsub = strip->pPatch->segV;
+	Bevel_Save( X->pPatch, r.origA );
+	Bevel_Save( Y->pPatch, r.origB );
+	Bevel_Snap( X->pPatch, r.postA );
+	Bevel_Snap( Y->pPatch, r.postB );
+	Bevel_Snap( strip->pPatch, r.postS );
+	g_bevelRecs.push_back( r );
+}
+
 static bool Bevel_Recognize( brush_t *strip, bool report ){
 	g_recogStage = 0;
 	strcpy( g_recogWhy, "" );
@@ -3269,6 +3288,15 @@ static bool Bevel_Recognize( brush_t *strip, bool report ){
 		sprintf( both, "%s (the other way round: %s)", first, g_recogWhy );
 		strncpy( g_recogWhy, both, sizeof( g_recogWhy ) - 1 );
 		g_recogWhy[sizeof( g_recogWhy ) - 1] = 0;
+	}
+	if ( g_recogStage == 1 ) {
+		// not the cut of anything, but a strip that lies on a border of two patches: made by Bridge Edge Loops, or by the
+		// Bevel button on two loops. Only its subdivisions can be set.
+		Bevel_AddBridgeRecord( strip, P0, s0, P2, s2, ++g_bevelGen, 0 );
+		if ( report ) {
+			Sys_Printf( "Bevel Edge: this strip lies between two patches without having been cut from them: it can be adjusted (subdivisions only).\n" );
+		}
+		return true;
 	}
 	return false;
 done:
@@ -3337,7 +3365,7 @@ int Bevel_RecogniseCommand(){
 }
 
 // the selected strip of a bevel that can still be edited, with its numbers; NULL if there is none
-brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub ){
+brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub, bool *bridge ){
 	for ( size_t i = 0; i < g_bevelRecs.size(); )
 	{
 		if ( !Bevel_IsSelected( g_bevelRecs[i].strip ) ) {
@@ -3361,6 +3389,9 @@ brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub ){
 			*width = g_bevelRecs[i].width;
 			*maxW = g_bevelRecs[i].maxW;
 			*nsub = g_bevelRecs[i].nsub;
+			if ( bridge ) {
+				*bridge = g_bevelRecs[i].bridge;
+			}
 			return g_bevelRecs[i].strip;
 		}
 	}
@@ -3372,7 +3403,7 @@ brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub ){
 		Bevel_RecogniseSelected( false, &found, NULL );
 		looking = false;
 		if ( found > 0 ) {
-			return BevelRec_Selected( width, maxW, nsub );
+			return BevelRec_Selected( width, maxW, nsub, bridge );
 		}
 	}
 	return NULL;
@@ -3416,24 +3447,68 @@ static void Bevel_PutBackAll( const std::vector<bevelRec_t*> &recs, std::vector<
 // own numbers, since the patch is put back first.
 int BevelRec_Edit( float width, int nsub ){
 	Bevel_RotateBegin(); // the bevels that share patches with the selected ones, moved with the model, are taken up too
+	// strips between two loops: nothing was cut, only the subdivisions are set (the width means nothing for them)
+	int nBridge = 0;
+	{
+		std::vector<size_t> bsel;
+		for ( size_t i = 0; i < g_bevelRecs.size(); i++ )
+			if ( g_bevelRecs[i].bridge && Bevel_RecValid( g_bevelRecs[i] ) && Bevel_IsSelected( g_bevelRecs[i].strip ) ) {
+				bsel.push_back( i );
+			}
+		if ( !bsel.empty() ) {
+			const int top = Undo_GetUndoId();
+			bool continuing = top != 0;
+			for ( size_t i = 0; i < bsel.size(); i++ )
+				if ( g_bevelRecs[bsel[i]].undoId != top ) {
+					continuing = false;
+				}
+			const bool useUndo = !continuing;
+			if ( useUndo ) {
+				Undo_Start( "edit bridge" );
+				g_bevelUndone.clear();
+				for ( size_t i = 0; i < bsel.size(); i++ )
+					Bevel_UndoAdd( g_bevelRecs[bsel[i]].strip );
+			}
+			for ( size_t i = 0; i < bsel.size(); i++ )
+			{
+				bevelRec_t &r = g_bevelRecs[bsel[i]];
+				patchMesh_t *s = r.strip->pPatch;
+				s->segV = SegPatch_ClampV( nsub );
+				r.nsub = s->segV;
+				s->bDirty = true;
+				Patch_Rebuild( s );
+				if ( useUndo ) {
+					Undo_EndBrush( r.strip );
+				}
+				Bevel_Snap( s, r.postS );
+				nBridge++;
+			}
+			if ( useUndo ) {
+				const int id = Undo_GetUndoId();
+				for ( size_t i = 0; i < bsel.size(); i++ )
+					g_bevelRecs[bsel[i]].undoId = id;
+				Undo_End();
+			}
+		}
+	}
 	std::vector<size_t> sel;
 	std::vector<bool> own;
 	for ( size_t i = 0; i < g_bevelRecs.size(); i++ )
-		if ( Bevel_RecValid( g_bevelRecs[i] ) && Bevel_IsSelected( g_bevelRecs[i].strip ) ) {
+		if ( !g_bevelRecs[i].bridge && Bevel_RecValid( g_bevelRecs[i] ) && Bevel_IsSelected( g_bevelRecs[i].strip ) ) {
 			sel.push_back( i );
 			own.push_back( true );
 		}
 	if ( sel.empty() ) {
 		UpdatePatchInspector();
 		Sys_UpdateWindows( W_ALL );
-		return 0;
+		return nBridge;
 	}
 	for ( bool grew = true; grew; )
 	{
 		grew = false;
 		for ( size_t j = 0; j < g_bevelRecs.size(); j++ )
 		{
-			if ( !Bevel_RecLive( g_bevelRecs[j] ) || std::find( sel.begin(), sel.end(), j ) != sel.end() ) {
+			if ( g_bevelRecs[j].bridge || !Bevel_RecLive( g_bevelRecs[j] ) || std::find( sel.begin(), sel.end(), j ) != sel.end() ) {
 				continue;
 			}
 			for ( size_t k = 0; k < sel.size(); k++ )
@@ -3645,7 +3720,7 @@ int BevelRec_Remove(){
 		grew = false;
 		for ( size_t j = 0; j < g_bevelRecs.size(); j++ )
 		{
-			if ( !Bevel_RecLive( g_bevelRecs[j] ) || std::find( idx.begin(), idx.end(), j ) != idx.end() ) {
+			if ( g_bevelRecs[j].bridge || !Bevel_RecLive( g_bevelRecs[j] ) || std::find( idx.begin(), idx.end(), j ) != idx.end() ) {
 				continue;
 			}
 			for ( size_t k = 0; k < idx.size(); k++ )
@@ -3719,7 +3794,28 @@ int BevelRec_Remove(){
 
 	g_bevelEdges.clear();
 	for ( size_t i = 0; i < todo.size(); i++ )
-		g_bevelEdges.push_back( todo[i].e );
+	{
+		if ( todo[i].bridge ) {
+			// a strip between two loops: the two borders it joined are picked again, as free edges
+			const bevelEdge_t fa = { todo[i].e.a, todo[i].e.sideA, NULL, 0, false }, fb = { todo[i].e.b, todo[i].e.sideB, NULL, 0, false };
+			bool ka = false, kb = false;
+			for ( size_t k = 0; k < g_bevelEdges.size(); k++ )
+			{
+				ka = ka || Bevel_SameEdge( g_bevelEdges[k], fa );
+				kb = kb || Bevel_SameEdge( g_bevelEdges[k], fb );
+			}
+			if ( !ka ) {
+				g_bevelEdges.push_back( fa );
+			}
+			if ( !kb ) {
+				g_bevelEdges.push_back( fb );
+			}
+		}
+		else
+		{
+			g_bevelEdges.push_back( todo[i].e );
+		}
+	}
 	g_lastPickValid = false;
 	UpdatePatchInspector();
 	Sys_UpdateWindows( W_ALL );
@@ -3743,6 +3839,12 @@ int BevelRec_Remove(){
 // of the panel.
 // =============================================================================
 
+struct bridgeSrc_t
+{
+	brush_t *b;                     // the patch and which border of it
+	int side;
+};
+
 struct bridgeEdge_t
 {
 	std::vector<bevelPt_t> pts;     // the control points of the border, oriented along the loop
@@ -3750,6 +3852,7 @@ struct bridgeEdge_t
 	float count;                    // segments along it if its patch is segmented, else 0
 	float inward[3];                // unit direction into the patch it belongs to (zero if another patch shares the border)
 	brush_t *a;
+	int side;                       // which border of it
 };
 
 struct bridgeLoop_t
@@ -3758,6 +3861,7 @@ struct bridgeLoop_t
 	std::vector<bevelPt_t> out;     // as in bridgeEdge_t, for every point
 	std::vector<int> joints;        // where an edge of the loop begins, other than the first
 	std::vector<float> perSpan;     // segments per span of three control points, from the patches (0: ordinary patches)
+	std::vector<bridgeSrc_t> src;   // the patch border each span comes from
 	bool closed;
 	float inward[3];
 	brush_t *first;
@@ -3826,6 +3930,7 @@ static bool Bridge_Chain( const std::vector<bridgeEdge_t> &all, const std::vecto
 	out.out.clear();
 	out.joints.clear();
 	out.perSpan.clear();
+	out.src.clear();
 	VectorClear( out.inward );
 	out.first = all[C[order[0]]].a;
 	for ( size_t i = 0; i < m; i++ )
@@ -3846,7 +3951,11 @@ static bool Bridge_Chain( const std::vector<bridgeEdge_t> &all, const std::vecto
 		}
 		const int spans = ( (int)pts.size() - 1 ) / 2;
 		for ( int s = 0; s < spans; s++ )
+		{
 			out.perSpan.push_back( e.count / spans );
+			const bridgeSrc_t bs = { e.a, e.side };
+			out.src.push_back( bs );
+		}
 		VectorAdd( out.inward, e.inward, out.inward );
 	}
 	out.closed = Bevel_SamePt( out.pts.front().v, out.pts.back().v );
@@ -3864,6 +3973,7 @@ static void Bridge_Turn( bridgeLoop_t &l, bool rev, int sh ){
 		std::reverse( l.pts.begin(), l.pts.end() );
 		std::reverse( l.out.begin(), l.out.end() );
 		std::reverse( l.perSpan.begin(), l.perSpan.end() );
+		std::reverse( l.src.begin(), l.src.end() );
 		for ( size_t i = 0; i < l.joints.size(); i++ )
 			l.joints[i] = P - 1 - l.joints[i];
 	}
@@ -3883,6 +3993,10 @@ static void Bridge_Turn( bridgeLoop_t &l, bool rev, int sh ){
 		for ( int i = 0; i < ns; i++ )
 			ps[i] = l.perSpan[( i + sh ) % ns];
 		l.perSpan = ps;
+		std::vector<bridgeSrc_t> ss( ns );
+		for ( int i = 0; i < ns; i++ )
+			ss[i] = l.src[( i + sh ) % ns];
+		l.src = ss;
 		for ( size_t i = 0; i < l.joints.size(); i++ )
 			l.joints[i] = ( ( l.joints[i] - 2 * sh ) % N + N ) % N;
 	}
@@ -3927,6 +4041,7 @@ static bool Bridge_Collect( bridgeLoop_t *loops, bool quiet, bool groupOnly, int
 		bridgeEdge_t be;
 		be.pts.assign( rim, rim + n );
 		be.a = e.a;
+		be.side = e.sideA;
 		const patchMesh_t *pa = e.a->pPatch;
 		be.count = pa->segH > 0 ? (float)( e.sideA < 2 ? pa->segV : pa->segH ) : 0.0f;
 		VectorClear( be.inward );
@@ -4225,6 +4340,7 @@ static int Bridge_Make( bridgeLoop_t *loops, bool curved, int nsub ){
 		th = 1.0f;
 	}
 
+	const int gen = ++g_bevelGen;
 	std::vector<brush_t*> brushes;
 	for ( size_t pc = 0; pc < made.size(); pc++ )
 	{
@@ -4245,6 +4361,11 @@ static int Bridge_Make( bridgeLoop_t *loops, bool curved, int nsub ){
 		s->bDirty = true;
 		Patch_Rebuild( s );
 		Undo_EndBrush( sb );
+		{
+			// remembered, so that the panel comes up for it and its subdivisions can be set
+			const bridgeSrc_t &sa = LA.src[from[pc] / 2], &sbb = LB.src[from[pc] / 2];
+			Bevel_AddBridgeRecord( sb, sa.b, sa.side, sbb.b, sbb.side, gen, Undo_GetUndoId() );
+		}
 		brushes.push_back( sb );
 	}
 	BevelEdge_Clear();

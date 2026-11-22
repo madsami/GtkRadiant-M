@@ -16,6 +16,7 @@ struct bevelEdge_t
 	brush_t *b;
 	int sideB;
 	bool reversed;      // the border of b runs the other way round
+	float ratio;        // 0 (or 1): both patches are cut by the same width; else the cut of b is ratio times the cut of a
 };
 
 #endif

@@ -1563,6 +1563,9 @@ static brush_t* Bevel_Build( const bevelEdge_t &e, float width, int nsub, bevelR
 	if ( limit > 0.0f && limit < maxW ) {
 		maxW = limit;
 	}
+	if ( e.ratio > 1.0f ) {
+		maxW /= e.ratio; // the cut of the second patch is longer than the width
+	}
 	if ( width > maxW ) {
 		width = maxW;
 	}
@@ -1586,7 +1589,7 @@ static brush_t* Bevel_Build( const bevelEdge_t &e, float width, int nsub, bevelR
 	}
 
 	std::vector<bevelPt_t> SA, LA, SB, LB;
-	const float tA = Bevel_TrimParam( fa, width ), tB = Bevel_TrimParam( fb, width );
+	const float tA = Bevel_TrimParam( fa, width ), tB = Bevel_TrimParam( fb, e.ratio > 0.0f ? width * e.ratio : width );
 	Bevel_Trim( fa, tA, SA, LA );
 	Bevel_Trim( fb, tB, SB, LB );
 	if ( g_bevelSnap > 0.0f ) {
@@ -3292,7 +3295,7 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 			wx = cx[bi].width;
 			wy = cy[bj].width;
 			const float wm = wx > wy ? wx : wy;
-			if ( fabsf( wx - wy ) > 0.1f * wm + 0.3f ) {
+			if ( wm > 4.0f * ( wx < wy ? wx : wy ) ) {
 				char la[160], lb[160];
 				la[0] = lb[0] = 0;
 				for ( size_t i = 0; i < cx.size() && i < 3; i++ )
@@ -3313,21 +3316,23 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 	if ( picked ) {
 		g_recogStage = 2;
 		const float wmax = wx > wy ? wx : wy;
-		if ( fabsf( wx - wy ) > 0.1f * wmax + 0.3f ) {
+		if ( wmax > 4.0f * ( wx < wy ? wx : wy ) ) {
 			sprintf( why, "the cut is %.2f wide on one patch and %.2f on the other", wx, wy );
 		}
 		else
 		{
-			bevelEdge_t e = { X, sx, Y, sy, revX != revY };
+			// the two cuts are not always the same width (a bevel made by an older version, a patch edited afterwards):
+			// the second one is remembered as a multiple of the first
+			bevelEdge_t e = { X, sx, Y, sy, revX != revY, ( fabsf( wx - wy ) > 0.02f * wmax ) ? wy / wx : 0.0f };
 			rec.e = e;
 			rec.strip = strip;
 			rec.nsub = ps->segV;
 			Bevel_EdgeCorners( e, rec.v0 );
 			rec.gen = g_bevelGen + 1;
-			brush_t *made = Bevel_Build( e, 0.5f * ( wx + wy ), SegPatch_ClampV( ps->segV ), &rec, false );
+			brush_t *made = Bevel_Build( e, wx, SegPatch_ClampV( ps->segV ), &rec, false );
 			g_recogStage = 3;
 			if ( made == NULL ) {
-				sprintf( why, "the bevel could not be made again from the patches as they were (width %.2f)", 0.5f * ( wx + wy ) );
+				sprintf( why, "the bevel could not be made again from the patches as they were (width %.2f and %.2f)", wx, wy );
 			}
 			else
 			{
@@ -3336,7 +3341,7 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 				const float dx = Bevel_MaxDev( savedX, px ), dy = Bevel_MaxDev( savedY, py );
 				ok = dx <= 0.75f && dy <= 0.75f;
 				if ( !ok ) {
-					sprintf( why, "making the bevel again (width %.2f) does not give the patches back: off by %.2f and %.2f", 0.5f * ( wx + wy ), dx, dy );
+					sprintf( why, "making the bevel again (width %.2f and %.2f) does not give the patches back: off by %.2f and %.2f", wx, wy, dx, dy );
 				}
 			}
 		}
@@ -4059,7 +4064,9 @@ int BevelRec_Remove(){
 		}
 		else
 		{
-			g_bevelEdges.push_back( todo[i].e );
+			bevelEdge_t plain = todo[i].e;
+			plain.ratio = 0.0f; // a new bevel on it is cut by one width
+			g_bevelEdges.push_back( plain );
 		}
 	}
 	g_lastPickValid = false;

@@ -749,7 +749,7 @@ void Seat_Draw(){
 		qglEnable( GL_BLEND );
 		qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
 		qglLineWidth( 1 );
-		qglColor4f( 0.1f, 0.9f, 1.0f, 0.07f ); // hull edges: hundreds of them overlap, so each one is faint
+		qglColor4f( 1.0f, 0.5f, 0.0f, 0.07f ); // hull edges: hundreds of them overlap, so each one is faint
 		for ( std::map<int, std::vector<float> >::iterator it = g_seatCue.begin(); it != g_seatCue.end(); ++it )
 		{
 			qglBegin( GL_LINES );
@@ -763,7 +763,7 @@ void Seat_Draw(){
 	qglEnable( GL_BLEND );
 	qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
 	qglLineWidth( 2 );
-	qglColor4f( 0.1f, 0.9f, 1.0f, 0.12f );
+	qglColor4f( 1.0f, 0.5f, 0.0f, 0.15f );
 	for ( size_t i = 0; i < cutters.size(); i++ )
 	{
 		const segGrid_t *g = Patch_GetSegGrid( cutters[i] );

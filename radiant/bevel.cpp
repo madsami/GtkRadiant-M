@@ -3251,7 +3251,7 @@ static void Bevel_AddBridgeRecord( brush_t *strip, brush_t *X, int sx, brush_t *
 	g_bevelRecs.push_back( r );
 }
 
-static bool Bevel_Recognize( brush_t *strip, bool report ){
+static bool Bevel_Recognize( brush_t *strip, bool report, bool allowBridge ){
 	g_recogStage = 0;
 	strcpy( g_recogWhy, "" );
 	if ( !Bevel_BrushLive( strip ) ) {
@@ -3289,7 +3289,7 @@ static bool Bevel_Recognize( brush_t *strip, bool report ){
 		strncpy( g_recogWhy, both, sizeof( g_recogWhy ) - 1 );
 		g_recogWhy[sizeof( g_recogWhy ) - 1] = 0;
 	}
-	if ( g_recogStage == 1 ) {
+	if ( allowBridge && g_recogStage == 1 ) {
 		// not the cut of anything, but a strip that lies on a border of two patches: made by Bridge Edge Loops, or by the
 		// Bevel button on two loops. Only its subdivisions can be set.
 		Bevel_AddBridgeRecord( strip, P0, s0, P2, s2, ++g_bevelGen, 0 );
@@ -3316,6 +3316,13 @@ static void Bevel_RecogniseSelected( bool force, int *found, int *tried ){
 		if ( !b->patchBrush || !b->pPatch || b->pPatch->height != 3 || Bevel_IsStrip( b ) ) {
 			continue;
 		}
+		if ( Bevel_IsRecPatch( b ) ) {
+			// a patch that a bevel was cut into (the cylinder it spawned from): never mistaken for the strip itself
+			if ( force ) {
+				Sys_Printf( "Bevel Edge: this patch is one that a bevel joins, select the strip between the patches instead.\n" );
+			}
+			continue;
+		}
 		std::vector<float> state;
 		Bevel_Snap( b->pPatch, state );
 		std::map<brush_t*, std::vector<float> >::iterator it = g_bevelTried.find( b );
@@ -3326,7 +3333,9 @@ static void Bevel_RecogniseSelected( bool force, int *found, int *tried ){
 		if ( tried ) {
 			( *tried )++;
 		}
-		if ( Bevel_Recognize( b, !force ) ) {
+		// only the menu command takes a strip that was not cut from anything for a bevel: on its own, every three row
+		// patch next to two others would turn into one
+		if ( Bevel_Recognize( b, !force, force ) ) {
 			if ( found ) {
 				( *found )++;
 			}
@@ -3337,23 +3346,122 @@ static void Bevel_RecogniseSelected( bool force, int *found, int *tried ){
 	}
 }
 
+// A strip between two borders that were not cut: the patches next to it moved or changed, but it still lies on the same
+// two borders. Its record is made right for the way they are now.
+static bool Bevel_RefreshBridge( bevelRec_t &r ){
+	if ( !r.bridge || !Bevel_RecLiveAll( r ) || r.strip->pPatch->height != 3 ) {
+		return false;
+	}
+	brush_t *P0 = NULL, *P2 = NULL;
+	int s0 = 0, s2 = 0;
+	bool r0 = false, r2 = false;
+	if ( !Bevel_FindPartnerTol( r.strip, 2, &P0, &s0, &r0, 1.0f ) || !Bevel_FindPartnerTol( r.strip, 3, &P2, &s2, &r2, 1.0f ) ) {
+		return false;
+	}
+	if ( P0 == r.e.a && P2 == r.e.b ) {
+		r.e.sideA = s0;
+		r.e.sideB = s2;
+	}
+	else if ( P0 == r.e.b && P2 == r.e.a ) {
+		r.e.sideA = s2;
+		r.e.sideB = s0;
+	}
+	else
+	{
+		return false;
+	}
+	Bevel_Snap( r.e.a->pPatch, r.postA );
+	Bevel_Snap( r.e.b->pPatch, r.postB );
+	Bevel_Snap( r.strip->pPatch, r.postS );
+	r.nsub = r.strip->pPatch->segV;
+	return true;
+}
+
+// The state of a record's three patches, for not trying the same thing again for the same state.
+static void Bevel_HealState( const bevelRec_t &r, std::vector<float> &st ){
+	st.clear();
+	brush_t *three[3] = { r.strip, r.e.a, r.e.b };
+	for ( int k = 0; k < 3; k++ )
+	{
+		std::vector<float> one;
+		if ( Bevel_BrushLive( three[k] ) ) {
+			Bevel_Snap( three[k]->pPatch, one );
+		}
+		st.push_back( (float)one.size() );
+		st.insert( st.end(), one.begin(), one.end() );
+	}
+}
+
+static std::map<brush_t*, std::vector<float> > g_bevelHealTried;
+
+// The record at index i does not fit its patches (they were moved about, edited, or replaced). It is never thrown away
+// for that: the strip is looked at again, and if it still is not a bevel that can be told from its shape the record is
+// kept as it is, to be taken up again when the patches fit it again (undoing a move, say).
+// Returns 1: the record at i is right again, 2: it was replaced by a new one (at the end), 0: kept as it was.
+static int Bevel_Heal( size_t i, bool force ){
+	const bevelRec_t old = g_bevelRecs[i];
+	if ( !Bevel_BrushLive( old.strip ) ) {
+		return 0;
+	}
+	if ( Bevel_RefreshBridge( g_bevelRecs[i] ) ) {
+		return 1;
+	}
+	std::vector<float> st;
+	Bevel_HealState( old, st );
+	std::map<brush_t*, std::vector<float> >::iterator it = g_bevelHealTried.find( old.strip );
+	if ( !force && it != g_bevelHealTried.end() && it->second == st ) {
+		return 0; // looked at in this state already
+	}
+	g_bevelHealTried[old.strip] = st;
+	if ( old.bridge ) {
+		Sys_Printf( "Bevel Edge: this strip does not lie on the two borders it was made between any more. It can be adjusted again when it does.\n" );
+		return 0;
+	}
+	g_bevelRecs.erase( g_bevelRecs.begin() + i );
+	if ( Bevel_Recognize( old.strip, true, false ) ) {
+		return 2;
+	}
+	g_bevelRecs.insert( g_bevelRecs.begin() + i, old );
+	Sys_Printf( "Bevel Edge: the patches next to this bevel no longer fit it (%s). It can be adjusted again when they do (undo, or move them back), or with Curve > Recognize Bevel.\n", g_recogWhy );
+	return 0;
+}
+
 // The menu command: every selected patch that is the strip of a bevel and is not known as one becomes adjustable again.
 int Bevel_RecogniseCommand(){
-	// records that no longer fit are let go first, the strip is looked at as it is now
+	int found = 0, already = 0;
+	// strips that have a record that no longer fits: the record is made right, or replaced by what the shape tells
 	for ( size_t i = 0; i < g_bevelRecs.size(); )
 	{
-		if ( Bevel_IsSelected( g_bevelRecs[i].strip ) && !Bevel_RecValid( g_bevelRecs[i] ) ) {
-			g_bevelRecs.erase( g_bevelRecs.begin() + i );
+		if ( !Bevel_IsSelected( g_bevelRecs[i].strip ) ) {
+			i++;
+		}
+		else if ( Bevel_RecValid( g_bevelRecs[i] ) ) {
+			already++;
+			i++;
 		}
 		else
 		{
-			i++;
+			const int h = Bevel_Heal( i, true );
+			if ( h == 2 ) {
+				found++;
+			}
+			else
+			{
+				if ( h == 1 ) {
+					found++;
+				}
+				i++;
+			}
 		}
 	}
-	int found = 0, tried = 0;
-	Bevel_RecogniseSelected( true, &found, &tried );
+	int tried = 0, fresh = 0;
+	Bevel_RecogniseSelected( true, &fresh, &tried );
+	found += fresh;
 	if ( found > 0 ) {
 		Sys_Printf( "Bevel Edge: %d bevel(s) recognised, select the strip to adjust it.\n", found );
+	}
+	else if ( already > 0 ) {
+		Sys_Printf( "Bevel Edge: the selected strip is known as a bevel already and can be adjusted.\n" );
 	}
 	else
 	{
@@ -3373,17 +3481,15 @@ brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub, bool *bridge )
 			continue;
 		}
 		if ( !Bevel_RecValid( g_bevelRecs[i] ) ) {
-			// the patches changed since the bevel was made: its record no longer fits, but the bevel may still be one
-			const bevelRec_t r = g_bevelRecs[i];
-			g_bevelRecs.erase( g_bevelRecs.begin() + i );
-			if ( !Bevel_Recognize( r.strip, true ) ) {
-				Sys_Printf( "Bevel Edge: a selected bevel can no longer be adjusted (patches live %d/%d/%d, unchanged since it was made: %d/%d/%d; it could not be recognised from its shape either).\n",
-							Bevel_BrushLive( r.e.a ), Bevel_BrushLive( r.e.b ), Bevel_BrushLive( r.strip ),
-							Bevel_BrushLive( r.e.a ) && Bevel_SnapSame( r.e.a->pPatch, r.postA ),
-							Bevel_BrushLive( r.e.b ) && Bevel_SnapSame( r.e.b->pPatch, r.postB ),
-							Bevel_BrushLive( r.strip ) && Bevel_SnapSame( r.strip->pPatch, r.postS ) );
+			// the patches changed since the bevel was made: the record is made right, or the shape tells it again; if
+			// neither works it is kept, and the bevel can be adjusted again as soon as the patches fit it
+			const int h = Bevel_Heal( i, false );
+			if ( h != 1 ) {
+				if ( h == 0 ) {
+					i++;
+				}
+				continue;
 			}
-			continue;
 		}
 		{
 			*width = g_bevelRecs[i].width;

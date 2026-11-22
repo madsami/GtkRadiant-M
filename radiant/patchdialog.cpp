@@ -1186,6 +1186,8 @@ static GtkWidget *g_bevelPanel = NULL;
 static GtkWidget *g_bevelSubdiv = NULL;
 static GtkWidget *g_bevelWidth = NULL;
 static GtkWidget *g_bevelInfo = NULL;
+static GtkWidget *g_bevelSnapBox = NULL;
+static const float g_bevelSnapValues[] = { 0.0f, 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f };
 static GtkWidget *g_bevelButton = NULL;
 static GtkWidget *g_bevelRemoveButton = NULL;
 static bool g_bevelListen = false;
@@ -1259,6 +1261,14 @@ static void OnBevelSubdivChanged( GtkWidget *widget, gpointer data ){
 	BevelPanelLive();
 }
 
+static void OnBevelSnapChanged( GtkWidget *widget, gpointer data ){
+	const int i = gtk_combo_box_get_active( GTK_COMBO_BOX( g_bevelSnapBox ) );
+	if ( i >= 0 && i < (int)( sizeof( g_bevelSnapValues ) / sizeof( g_bevelSnapValues[0] ) ) ) {
+		Bevel_SetSnap( g_bevelSnapValues[i] );
+	}
+	BevelPanelLive(); // a bevel that is being edited is cut again on the new grid
+}
+
 static gboolean OnBevelEnter( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
 	gtk_window_set_accept_focus( GTK_WINDOW( g_bevelPanel ), TRUE );
 	return FALSE;
@@ -1329,6 +1339,30 @@ static void BevelPanelBuild(){
 		gtk_box_pack_start( GTK_BOX( hbox ), button, FALSE, FALSE, 0 );
 		gtk_widget_show( button );
 	}
+
+	hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox );
+	label = gtk_label_new( _( "Snap to grid" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), label, FALSE, FALSE, 0 );
+	gtk_widget_show( label );
+	g_bevelSnapBox = gtk_combo_box_new_text();
+	{
+		static const char *snapNames[] = { "Off", "0.125", "0.25", "0.5", "1", "2", "4", "8" };
+		int active = 0;
+		for ( int i = 0; i < 8; i++ )
+		{
+			gtk_combo_box_append_text( GTK_COMBO_BOX( g_bevelSnapBox ), snapNames[i] );
+			if ( fabsf( g_bevelSnapValues[i] - Bevel_GetSnap() ) < 1e-6f ) {
+				active = i;
+			}
+		}
+		gtk_combo_box_set_active( GTK_COMBO_BOX( g_bevelSnapBox ), active );
+	}
+	gtk_widget_set_tooltip_text( g_bevelSnapBox, _( "Put the points where the bevel meets the two patches on this grid, so that patches made on the grid afterwards (a new cylinder or cap on an open bevel) meet it exactly with no gap. Off leaves them where the cut puts them, which keeps circles exact but is usually off the grid. A bevel that is being edited is cut again with the choice made here" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_bevelSnapBox, FALSE, FALSE, 0 );
+	gtk_widget_show( g_bevelSnapBox );
+	g_signal_connect( G_OBJECT( g_bevelSnapBox ), "changed", G_CALLBACK( OnBevelSnapChanged ), NULL );
 
 	hbox = gtk_hbox_new( FALSE, 6 );
 	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );

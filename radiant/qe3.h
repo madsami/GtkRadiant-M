@@ -492,6 +492,9 @@ int BevelRec_Remove();
 void Bevel_RotateBegin();
 void Bevel_RotateEnd( const float *origin, const vec3_t M[3] );
 int BevelEdges_Apply( float width, int nsub );
+// grid the cut borders of new (and edited) bevels are put on, 0 for none
+void Bevel_SetSnap( float g );
+float Bevel_GetSnap();
 void Patch_Transpose();
 void Patch_Freeze();
 void Patch_UnFreeze( bool bAll );

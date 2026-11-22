@@ -1206,13 +1206,26 @@ struct bevelRec_t
 	float v0[2][3];         // the two corners of the edge before it was beveled (first and last column of the strip)
 	int gen;                // which batch of bevels it was made with; a later one may be made on the strips of an earlier one
 	bool inv;               // the rows of the strip run from the second patch to the first (the strip was turned over)
-	bevelRec_t() : strip( NULL ), width( 0 ), maxW( 0 ), nsub( 0 ), undoId( 0 ), gen( 0 ), inv( false ){
+	float snap;             // the grid the borders of the cut were put on when it was made (0: not at all)
+	bevelRec_t() : strip( NULL ), width( 0 ), maxW( 0 ), nsub( 0 ), undoId( 0 ), gen( 0 ), inv( false ), snap( 0 ){
 		cap[0] = cap[1] = NULL;
 		memset( v0, 0, sizeof( v0 ) );
 	}
 };
 
 static std::vector<bevelRec_t> g_bevelRecs;
+
+// The points where a bevel meets the patches it joins (the cut border of both patches, which the strip shares) can be
+// put on a grid, so that patches made on that grid afterwards meet them exactly. 0: the points are where the cut puts them.
+static float g_bevelSnap = 0.0f;
+
+void Bevel_SetSnap( float g ){
+	g_bevelSnap = g > 0.0f ? g : 0.0f;
+}
+
+float Bevel_GetSnap(){
+	return g_bevelSnap;
+}
 static int g_bevelGen = 0;
 
 // do two records have an end at the same corner of the model
@@ -1571,6 +1584,18 @@ static brush_t* Bevel_Build( const bevelEdge_t &e, float width, int nsub, bevelR
 	const float tA = Bevel_TrimParam( fa, width ), tB = Bevel_TrimParam( fb, width );
 	Bevel_Trim( fa, tA, SA, LA );
 	Bevel_Trim( fb, tB, SB, LB );
+	if ( g_bevelSnap > 0.0f ) {
+		// the cut border of each patch, which the strip takes over as its first and last row: the same point snaps the
+		// same way wherever it is, so the patches and the strip stay joined
+		const bevelFrame_t *fr[2] = { &fa, &fb };
+		for ( int w = 0; w < 2; w++ )
+			for ( int k = 0; k < fr[w]->n; k++ )
+			{
+				float *v = Bevel_At( *fr[w], k, 0 ).xyz;
+				for ( int c = 0; c < 3; c++ )
+					v[c] = floorf( v[c] / g_bevelSnap + 0.5f ) * g_bevelSnap;
+			}
+	}
 	// the strip's columns are numbered like the first patch's; the second one may run the other way
 	const int kmB = e.reversed ? n - 1 - km : km;
 
@@ -1701,6 +1726,7 @@ static brush_t* Bevel_Build( const bevelEdge_t &e, float width, int nsub, bevelR
 	r.origA = oA;
 	r.origB = oB;
 	r.inv = inverted;
+	r.snap = g_bevelSnap;
 	r.width = width;
 	r.maxW = maxW;
 	r.nsub = s->segV;
@@ -3148,7 +3174,7 @@ int BevelRec_Edit( float width, int nsub ){
 		{
 			const bevelRec_t &r = g_bevelRecs[sel[i]];
 			const float eff = width < r.maxW ? width : r.maxW;
-			if ( !own[i] || fabsf( eff - r.width ) > 0.005f ) {
+			if ( !own[i] || fabsf( eff - r.width ) > 0.005f || fabsf( r.snap - g_bevelSnap ) > 1e-6f ) {
 				fast = false;
 			}
 		}

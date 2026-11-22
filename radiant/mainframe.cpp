@@ -2133,6 +2133,14 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 								 new_image_icon("cog.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_COG ) );
 	g_object_set_data( G_OBJECT( window ), "tb_cog", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Merge Selection (Group)" ), "",
+								 new_image_icon("group_merge.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_GROUPMERGE ) );
+	g_object_set_data( G_OBJECT( window ), "tb_group_merge", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Split Group" ), "",
+								 new_image_icon("group_split.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_GROUPSPLIT ) );
+	g_object_set_data( G_OBJECT( window ), "tb_group_split", w );
 
 	/*
 	   uh? that is OLD

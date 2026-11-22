@@ -877,6 +877,137 @@ void PatchDialog::UpdateRowColInfo(){
 // goes away again when none is. Watching the selection from a timer instead of hooking every place
 // the selection can change keeps it right for all of them.
 
+// =============================================================================
+// Where the floating panels (segments, bevel, cog, cone) show up: stacked down the right edge of the grid
+// window, each in the first free place from the top, so that panels that are open together never cover each other.
+// A panel the player moved comes back where it was left.
+
+struct PanelSlot_t
+{
+	GtkWidget *w;
+	int ax, ay;     // where it was put when it was shown
+	bool user;      // it was shown where the player had left it
+};
+static PanelSlot_t g_panelSlots[8];
+static int g_panelSlotCount = 0;
+
+static PanelSlot_t *PanelSlot_Get( GtkWidget *w ){
+	for ( int i = 0; i < g_panelSlotCount; i++ )
+		if ( g_panelSlots[i].w == w ) {
+			return &g_panelSlots[i];
+		}
+	if ( g_panelSlotCount >= 8 ) {
+		return &g_panelSlots[7];
+	}
+	PanelSlot_t *s = &g_panelSlots[g_panelSlotCount++];
+	s->w = w;
+	s->ax = s->ay = 0;
+	s->user = false;
+	return s;
+}
+
+// x, y: remembered position of a panel the player moved (-1: not moved, put it in the stack)
+static void PanelStack_Show( GtkWidget *w, int *x, int *y ){
+	if ( gtk_widget_get_visible( w ) ) {
+		return;
+	}
+	PanelSlot_t *s = PanelSlot_Get( w );
+	if ( *x >= 0 ) {
+		s->user = true;
+		s->ax = *x;
+		s->ay = *y;
+		gtk_window_move( GTK_WINDOW( w ), *x, *y );
+		gtk_widget_show( w );
+		return;
+	}
+
+	// the area to stack in: the grid window, else the main window
+	gint left, top, right, bottom;
+	GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
+	GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
+	if ( gw ) {
+		gint ox = 0, oy = 0;
+		GtkAllocation a;
+		gdk_window_get_origin( gw, &ox, &oy );
+		gtk_widget_get_allocation( grid, &a );
+		left = ox;
+		top = oy;
+		right = ox + a.width;
+		bottom = oy + a.height;
+	}
+	else
+	{
+		gint mx = 0, my = 0, mw = 0, mh = 0;
+		gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
+		gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
+		left = mx;
+		top = my + 100;
+		right = mx + mw - 20;
+		bottom = my + mh;
+	}
+
+	// size with the window frame (the panels cannot be resized, so the request is the size)
+	GtkRequisition req;
+	gtk_widget_size_request( w, &req );
+	const int pw = req.width + 16, ph = req.height + 40;
+	const int gap = 6;
+
+	int col = 0, px = 0, py = 0;
+	for (;;)
+	{
+		px = right - 8 - pw - col * ( pw + gap );
+		py = top + 8;
+		for ( int pass = 0; pass < 32; pass++ )
+		{
+			bool pushed = false;
+			for ( int i = 0; i < g_panelSlotCount; i++ )
+			{
+				GtkWidget *o = g_panelSlots[i].w;
+				GdkWindow *ow = gtk_widget_get_window( o );
+				if ( o == w || !ow || !gtk_widget_get_visible( o ) ) {
+					continue;
+				}
+				GdkRectangle f;
+				gdk_window_get_frame_extents( ow, &f );
+				if ( px < f.x + f.width + gap && px + pw + gap > f.x && py < f.y + f.height + gap && py + ph + gap > f.y ) {
+					py = f.y + f.height + gap;
+					pushed = true;
+				}
+			}
+			if ( !pushed ) {
+				break;
+			}
+		}
+		if ( py + ph <= bottom || px - ( pw + gap ) < left || col >= 3 ) {
+			break;
+		}
+		col++; // no room left below the others: a new column to the left
+	}
+	s->user = false;
+	s->ax = px;
+	s->ay = py;
+	gtk_window_move( GTK_WINDOW( w ), px, py );
+	gtk_widget_show( w );
+}
+
+static void PanelStack_Hide( GtkWidget *w, int *x, int *y ){
+	if ( !gtk_widget_get_visible( w ) ) {
+		return;
+	}
+	PanelSlot_t *s = PanelSlot_Get( w );
+	int cx = 0, cy = 0;
+	gtk_window_get_position( GTK_WINDOW( w ), &cx, &cy );
+	if ( s->user || abs( cx - s->ax ) > 8 || abs( cy - s->ay ) > 8 ) {
+		*x = cx; // the player put it somewhere: it comes back there
+		*y = cy;
+	}
+	else
+	{
+		*x = *y = -1; // still where the stack put it: the stack decides again
+	}
+	gtk_widget_hide( w );
+}
+
 static GtkWidget *g_segPanel = NULL;
 static GtkWidget *g_segPanelH = NULL;
 static GtkWidget *g_segPanelV = NULL;
@@ -986,34 +1117,11 @@ static gboolean SegPanelTick( gpointer data ){
 		g_segPanelListen = true;
 
 		if ( !gtk_widget_get_visible( g_segPanel ) ) {
-			if ( g_segPanelX < 0 ) {
-				// first time: top right corner of the grid (XY) window
-				GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
-				GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
-				if ( gw ) {
-					gint ox = 0, oy = 0;
-					GtkAllocation a;
-					gdk_window_get_origin( gw, &ox, &oy );
-					gtk_widget_get_allocation( grid, &a );
-					g_segPanelX = ox + a.width - 360;
-					g_segPanelY = oy + 40;
-				}
-				else
-				{
-					gint mx = 0, my = 0, mw = 0, mh = 0;
-					gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
-					gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
-					g_segPanelX = mx + mw - 380;
-					g_segPanelY = my + 120;
-				}
-			}
-			gtk_window_move( GTK_WINDOW( g_segPanel ), g_segPanelX, g_segPanelY );
-			gtk_widget_show( g_segPanel );
+			PanelStack_Show( g_segPanel, &g_segPanelX, &g_segPanelY );
 		}
 	}
 	else if ( gtk_widget_get_visible( g_segPanel ) ) {
-		gtk_window_get_position( GTK_WINDOW( g_segPanel ), &g_segPanelX, &g_segPanelY ); // come back where it was left
-		gtk_widget_hide( g_segPanel );
+		PanelStack_Hide( g_segPanel, &g_segPanelX, &g_segPanelY );
 	}
 	return TRUE;
 }
@@ -1264,28 +1372,7 @@ static gboolean BevelPanelTick( gpointer data ){
 			g_bevelLastMax = maxW;
 		}
 		if ( !gtk_widget_get_visible( g_bevelPanel ) ) {
-			if ( g_bevelX < 0 ) {
-				GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
-				GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
-				if ( gw ) {
-					gint ox = 0, oy = 0;
-					GtkAllocation a;
-					gdk_window_get_origin( gw, &ox, &oy );
-					gtk_widget_get_allocation( grid, &a );
-					g_bevelX = ox + a.width - 380;
-					g_bevelY = oy + 100;
-				}
-				else
-				{
-					gint mx = 0, my = 0, mw = 0, mh = 0;
-					gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
-					gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
-					g_bevelX = mx + mw - 400;
-					g_bevelY = my + 180;
-				}
-			}
-			gtk_window_move( GTK_WINDOW( g_bevelPanel ), g_bevelX, g_bevelY );
-			gtk_widget_show( g_bevelPanel );
+			PanelStack_Show( g_bevelPanel, &g_bevelX, &g_bevelY );
 		}
 	}
 	else
@@ -1294,8 +1381,7 @@ static gboolean BevelPanelTick( gpointer data ){
 		g_bevelEditStrip = NULL;
 		g_bevelLastMax = -1.0f;
 		if ( gtk_widget_get_visible( g_bevelPanel ) ) {
-			gtk_window_get_position( GTK_WINDOW( g_bevelPanel ), &g_bevelX, &g_bevelY );
-			gtk_widget_hide( g_bevelPanel );
+			PanelStack_Hide( g_bevelPanel, &g_bevelX, &g_bevelY );
 		}
 	}
 	return TRUE;
@@ -1565,36 +1651,14 @@ static gboolean CogPanelTick( gpointer data ){
 			}
 		}
 		if ( !gtk_widget_get_visible( g_cogPanel ) ) {
-			if ( g_cogX < 0 ) {
-				GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
-				GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
-				if ( gw ) {
-					gint ox = 0, oy = 0;
-					GtkAllocation a;
-					gdk_window_get_origin( gw, &ox, &oy );
-					gtk_widget_get_allocation( grid, &a );
-					g_cogX = ox + a.width - 380;
-					g_cogY = oy + 260;
-				}
-				else
-				{
-					gint mx = 0, my = 0, mw = 0, mh = 0;
-					gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
-					gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
-					g_cogX = mx + mw - 400;
-					g_cogY = my + 340;
-				}
-			}
-			gtk_window_move( GTK_WINDOW( g_cogPanel ), g_cogX, g_cogY );
-			gtk_widget_show( g_cogPanel );
+			PanelStack_Show( g_cogPanel, &g_cogX, &g_cogY );
 		}
 	}
 	else
 	{
 		g_cogShownId = 0;
 		if ( gtk_widget_get_visible( g_cogPanel ) ) {
-			gtk_window_get_position( GTK_WINDOW( g_cogPanel ), &g_cogX, &g_cogY );
-			gtk_widget_hide( g_cogPanel );
+			PanelStack_Hide( g_cogPanel, &g_cogX, &g_cogY );
 		}
 	}
 	return TRUE;
@@ -1693,36 +1757,14 @@ static gboolean ConePanelTick( gpointer data ){
 			g_coneShown = who;
 		}
 		if ( !gtk_widget_get_visible( g_conePanel ) ) {
-			if ( g_coneX < 0 ) {
-				GtkWidget *grid = g_pParentWnd->GetXYWnd() ? g_pParentWnd->GetXYWnd()->GetWidget() : NULL;
-				GdkWindow *gw = grid ? gtk_widget_get_window( grid ) : NULL;
-				if ( gw ) {
-					gint ox = 0, oy = 0;
-					GtkAllocation a;
-					gdk_window_get_origin( gw, &ox, &oy );
-					gtk_widget_get_allocation( grid, &a );
-					g_coneX = ox + a.width - 300;
-					g_coneY = oy + 40;
-				}
-				else
-				{
-					gint mx = 0, my = 0, mw = 0, mh = 0;
-					gtk_window_get_position( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mx, &my );
-					gtk_window_get_size( GTK_WINDOW( g_pParentWnd->m_pWidget ), &mw, &mh );
-					g_coneX = mx + mw - 320;
-					g_coneY = my + 140;
-				}
-			}
-			gtk_window_move( GTK_WINDOW( g_conePanel ), g_coneX, g_coneY );
-			gtk_widget_show( g_conePanel );
+			PanelStack_Show( g_conePanel, &g_coneX, &g_coneY );
 		}
 	}
 	else
 	{
 		g_coneShown = NULL;
 		if ( gtk_widget_get_visible( g_conePanel ) ) {
-			gtk_window_get_position( GTK_WINDOW( g_conePanel ), &g_coneX, &g_coneY );
-			gtk_widget_hide( g_conePanel );
+			PanelStack_Hide( g_conePanel, &g_coneX, &g_coneY );
 		}
 	}
 	return TRUE;

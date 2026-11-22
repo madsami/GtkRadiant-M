@@ -1193,6 +1193,7 @@ static GtkWidget *g_bevelRemoveButton = NULL;
 static bool g_bevelListen = false;
 static float g_bevelFraction = 0.5f;    // 0 = the width was typed in, otherwise a portion of the maximum
 static float g_bevelLastMax = -1.0f;
+static bool g_bevelLastBridge = false;
 static float g_bevelMax = 0;            // the most the picked edge, or the bevel being edited, allows
 static int g_bevelMode = 0;             // 0 hidden, 1 edges are picked (new bevel), 2 an existing bevel is selected
 static brush_t *g_bevelEditStrip = NULL;
@@ -1394,12 +1395,14 @@ static gboolean BevelPanelTick( gpointer data ){
 	}
 	// what the panel is for right now: picked edges (a new bevel) or a selected bevel (edit it)
 	int mode = 0, editN = 0;
+	bool bridge = false; // picked edges are two loops with nothing between them: Bevel makes a strip between them
 	float maxW = 0, editW = 0;
 	brush_t *strip = NULL;
 	const int count = BevelEdge_Count();
 	if ( count > 0 ) {
 		mode = 1;
 		maxW = BevelEdge_MaxWidth();
+		bridge = maxW <= 0 && BevelEdge_BridgeCase();
 	}
 	else
 	{
@@ -1418,7 +1421,7 @@ static gboolean BevelPanelTick( gpointer data ){
 	}
 
 	if ( mode ) {
-		if ( mode != g_bevelMode || ( mode == 2 && strip != g_bevelEditStrip ) || ( mode == 1 && maxW != g_bevelLastMax ) ) {
+		if ( mode != g_bevelMode || ( mode == 2 && strip != g_bevelEditStrip ) || ( mode == 1 && ( maxW != g_bevelLastMax || bridge != g_bevelLastBridge ) ) ) {
 			g_bevelListen = false;
 			const float lo = maxW < 0.25f ? maxW : 0.25f;
 			gtk_spin_button_set_range( GTK_SPIN_BUTTON( g_bevelWidth ), lo, maxW > lo ? maxW : lo );
@@ -1439,7 +1442,10 @@ static gboolean BevelPanelTick( gpointer data ){
 				if ( g_bevelFraction > 0 && maxW > 0 ) {
 					gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_bevelWidth ), maxW * g_bevelFraction );
 				}
-				if ( maxW > 0 ) {
+				if ( bridge ) {
+					sprintf( text, "%d edge(s) in two loops: a strip is made between them", count );
+				}
+				else if ( maxW > 0 ) {
 					sprintf( text, "%d edge(s), up to %.2f wide", count, maxW );
 				}
 				else
@@ -1450,11 +1456,12 @@ static gboolean BevelPanelTick( gpointer data ){
 			gtk_label_set_text( GTK_LABEL( g_bevelInfo ), text );
 			gtk_widget_set_visible( g_bevelButton, mode == 1 );
 			gtk_widget_set_visible( g_bevelRemoveButton, mode == 2 );
-			gtk_widget_set_sensitive( g_bevelButton, maxW > 0 );
+			gtk_widget_set_sensitive( g_bevelButton, maxW > 0 || bridge );
 			g_bevelListen = true;
 			g_bevelMode = mode;
 			g_bevelEditStrip = strip;
 			g_bevelLastMax = maxW;
+				g_bevelLastBridge = bridge;
 		}
 		if ( !gtk_widget_get_visible( g_bevelPanel ) ) {
 			PanelStack_Show( g_bevelPanel, &g_bevelX, &g_bevelY );

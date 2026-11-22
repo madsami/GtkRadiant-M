@@ -17,6 +17,10 @@ void WINAPI Patch_Naturalize( patchMesh_t *p );
 
 static std::vector<bevelEdge_t> g_bevelEdges;
 
+// two picked loops with nothing between them: the Bevel button makes a strip (see Bridge edge loops, at the end)
+static bool Bridge_CaseForApply();
+static int Bridge_FromBevel( int nsub );
+
 struct bevelPt_t
 {
 	float v[3];
@@ -2991,6 +2995,9 @@ static void Bevel_ExtendOverSeams( std::vector<bevelEdge_t> &edges ){
 
 // bevel every picked edge; returns how many worked (the caller has started the undo step)
 int BevelEdges_Apply( float width, int nsub ){
+	if ( Bridge_CaseForApply() ) {
+		return Bridge_FromBevel( nsub );
+	}
 	std::vector<bevelEdge_t> edges = g_bevelEdges;
 	Bevel_ExtendOverSeams( edges );
 	std::vector<brush_t*> made;
@@ -3041,6 +3048,11 @@ int BevelEdges_Apply( float width, int nsub ){
 // as they are now; nothing is changed by the check.
 // ---------------------------------------------------------------------------
 
+// why the last attempt to recognise a bevel failed, and how far it got (0: no patches on both borders, 1: no cut found,
+// 2: the widths differ, 3: making the bevel again did not give the patches back)
+static char g_recogWhy[800];
+static int g_recogStage = 0;
+
 static float Bevel_SpanLenTo( const float *d0, const float *d1, const float *d2, float t ){
 	float cum[65];
 	Bevel_SpanTable( d0, d1, d2, cum );
@@ -3059,6 +3071,7 @@ static bool Bevel_Untrim( patchMesh_t *p, int side, const patchMesh_t *strip, bo
 	const bevelFrame_t f = Bevel_Frame( p, side );
 	const int n = f.n;
 	if ( f.m < 3 || ( f.m & 1 ) == 0 || strip->width != n || strip->height != 3 ) {
+		sprintf( g_recogWhy, "its side has %d points along the border and %d rows going in, the strip %d x %d", n, f.m, strip->width, strip->height );
 		return false;
 	}
 	// the t that fits the most: the border row S, the row r behind it and the end d2 of the span are the cut of (d0, d1, d2),
@@ -3087,6 +3100,7 @@ static bool Bevel_Untrim( patchMesh_t *p, int side, const patchMesh_t *strip, bo
 		}
 	}
 	if ( cnt == 0 || sqrtf( bestCost / cnt ) > 1.5f ) {
+		sprintf( g_recogWhy, "its two rows next to the border are not a cut of the surface that the strip's middle row would be the edge of (misfit %.2f units)", cnt ? sqrtf( bestCost / cnt ) : 0.0f );
 		return false;
 	}
 	const float t = bestT, u = 1.0f - t;
@@ -3122,18 +3136,23 @@ static bool Bevel_Untrim( patchMesh_t *p, int side, const patchMesh_t *strip, bo
 	return *width > 0.01f;
 }
 
-static bool Bevel_SameCtrl( const std::vector<drawVert_t> &a, const patchMesh_t *p, float tol ){
+// the largest distance between a control point of the patch and the saved one (huge if they are not the same shape)
+static float Bevel_MaxDev( const std::vector<drawVert_t> &a, const patchMesh_t *p ){
 	std::vector<drawVert_t> now;
 	Bevel_Save( p, now );
 	if ( now.size() != a.size() ) {
-		return false;
+		return 1e9f;
 	}
+	float worst = 0;
 	for ( size_t i = 0; i < now.size(); i++ )
 		for ( int c = 0; c < 3; c++ )
-			if ( fabsf( now[i].xyz[c] - a[i].xyz[c] ) > tol ) {
-				return false;
+		{
+			const float d = fabsf( now[i].xyz[c] - a[i].xyz[c] );
+			if ( d > worst ) {
+				worst = d;
 			}
-	return true;
+		}
+	return worst;
 }
 
 // X and Y are the patches on the two sides of the strip (sx, sy: the sides of them that meet it; revX / revY: that border
@@ -3148,9 +3167,23 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 	bool ok = false;
 	bevelRec_t rec;
 	float wx = 0, wy = 0;
-	if ( Bevel_Untrim( px, sx, ps, revX, &wx ) && Bevel_Untrim( py, sy, ps, revY, &wy ) ) {
+	char why[300];
+	why[0] = 0;
+	if ( !Bevel_Untrim( px, sx, ps, revX, &wx ) ) {
+		sprintf( why, "the first patch: %s", g_recogWhy );
+	}
+	else if ( !Bevel_Untrim( py, sy, ps, revY, &wy ) ) {
+		sprintf( why, "the second patch: %s", g_recogWhy );
+	}
+	else
+	{
+		g_recogStage = 2;
 		const float wmax = wx > wy ? wx : wy;
-		if ( fabsf( wx - wy ) <= 0.1f * wmax + 0.3f ) {
+		if ( fabsf( wx - wy ) > 0.1f * wmax + 0.3f ) {
+			sprintf( why, "the cut is %.2f wide on one patch and %.2f on the other", wx, wy );
+		}
+		else
+		{
 			bevelEdge_t e = { X, sx, Y, sy, revX != revY };
 			rec.e = e;
 			rec.strip = strip;
@@ -3158,9 +3191,20 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 			Bevel_EdgeCorners( e, rec.v0 );
 			rec.gen = g_bevelGen + 1;
 			brush_t *made = Bevel_Build( e, 0.5f * ( wx + wy ), SegPatch_ClampV( ps->segV ), &rec, false );
-			// the cut made again from what was worked out must give the patches as they are now (allowing for a point put on
-			// a grid, which cannot be told from the shape)
-			ok = made != NULL && Bevel_SameCtrl( savedX, px, 0.75f ) && Bevel_SameCtrl( savedY, py, 0.75f );
+			g_recogStage = 3;
+			if ( made == NULL ) {
+				sprintf( why, "the bevel could not be made again from the patches as they were (width %.2f)", 0.5f * ( wx + wy ) );
+			}
+			else
+			{
+				// the cut made again from what was worked out must give the patches as they are now (allowing for a point
+				// put on a grid, which cannot be told from the shape)
+				const float dx = Bevel_MaxDev( savedX, px ), dy = Bevel_MaxDev( savedY, py );
+				ok = dx <= 0.75f && dy <= 0.75f;
+				if ( !ok ) {
+					sprintf( why, "making the bevel again (width %.2f) does not give the patches back: off by %.2f and %.2f", 0.5f * ( wx + wy ), dx, dy );
+				}
+			}
 		}
 	}
 	// back to how they are
@@ -3173,6 +3217,8 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 	Patch_Rebuild( py );
 	Patch_Rebuild( ps );
 	if ( !ok ) {
+		strncpy( g_recogWhy, why, sizeof( g_recogWhy ) - 1 );
+		g_recogWhy[sizeof( g_recogWhy ) - 1] = 0;
 		return false;
 	}
 	g_bevelGen++;
@@ -3187,27 +3233,50 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 }
 
 static bool Bevel_Recognize( brush_t *strip, bool report ){
+	g_recogStage = 0;
+	strcpy( g_recogWhy, "" );
 	if ( !Bevel_BrushLive( strip ) ) {
+		strcpy( g_recogWhy, "the patch is gone" );
 		return false;
 	}
 	patchMesh_t *ps = strip->pPatch;
 	if ( ps->height != 3 || ps->width < 3 || ( ps->width & 1 ) == 0 ) {
+		sprintf( g_recogWhy, "a bevel strip has three rows of control points, this patch has %d x %d", ps->width, ps->height );
 		return false;
 	}
-	brush_t *P0, *P2;
-	int s0, s2;
-	bool r0, r2;
-	if ( !Bevel_FindPartnerTol( strip, 2, &P0, &s0, &r0, 1.0f ) || !Bevel_FindPartnerTol( strip, 3, &P2, &s2, &r2, 1.0f ) || P0 == P2 ) {
+	brush_t *P0 = NULL, *P2 = NULL;
+	int s0 = 0, s2 = 0;
+	bool r0 = false, r2 = false;
+	const bool have0 = Bevel_FindPartnerTol( strip, 2, &P0, &s0, &r0, 1.0f );
+	const bool have2 = Bevel_FindPartnerTol( strip, 3, &P2, &s2, &r2, 1.0f );
+	if ( !have0 || !have2 || P0 == P2 ) {
+		sprintf( g_recogWhy, "no patch with the same number of control points lies on %s (found: first border %s, second border %s)",
+				 !have0 && !have2 ? "either border of the strip" : "both borders of the strip", have0 ? "yes" : "no", have2 ? "yes" : "no" );
 		return false;
 	}
-	if ( Bevel_TryRecognize( strip, P0, s0, r0, P2, s2, r2 ) || Bevel_TryRecognize( strip, P2, s2, r2, P0, s0, r0 ) ) {
-		if ( report ) {
-			const bevelRec_t &r = g_bevelRecs.back();
-			Sys_Printf( "Bevel Edge: bevel recognised again (width %.2f, %d subdivisions), it can be adjusted.\n", r.width, r.nsub );
-		}
-		return true;
+	g_recogStage = 1;
+	char first[300];
+	if ( Bevel_TryRecognize( strip, P0, s0, r0, P2, s2, r2 ) ) {
+		goto done;
+	}
+	strncpy( first, g_recogWhy, sizeof( first ) - 1 );
+	first[sizeof( first ) - 1] = 0;
+	if ( Bevel_TryRecognize( strip, P2, s2, r2, P0, s0, r0 ) ) {
+		goto done;
+	}
+	if ( strcmp( first, g_recogWhy ) != 0 ) {
+		char both[700];
+		sprintf( both, "%s (the other way round: %s)", first, g_recogWhy );
+		strncpy( g_recogWhy, both, sizeof( g_recogWhy ) - 1 );
+		g_recogWhy[sizeof( g_recogWhy ) - 1] = 0;
 	}
 	return false;
+done:
+	if ( report ) {
+		const bevelRec_t &r = g_bevelRecs.back();
+		Sys_Printf( "Bevel Edge: bevel recognised again (width %.2f, %d subdivisions), it can be adjusted.\n", r.width, r.nsub );
+	}
+	return true;
 }
 
 // Selected patches that are a bevel strip without a record: recognised again, once for every state they are in.
@@ -3229,8 +3298,13 @@ static void Bevel_RecogniseSelected( bool force, int *found, int *tried ){
 		if ( tried ) {
 			( *tried )++;
 		}
-		if ( Bevel_Recognize( b, !force ) && found ) {
-			( *found )++;
+		if ( Bevel_Recognize( b, !force ) ) {
+			if ( found ) {
+				( *found )++;
+			}
+		}
+		else if ( force || g_recogStage >= 1 ) {
+			Sys_Printf( "Bevel Edge: this strip is not recognised as a bevel: %s.\n", g_recogWhy );
 		}
 	}
 }
@@ -3659,14 +3733,20 @@ int BevelRec_Remove(){
 // them filled with patches. A loop is picked edges that follow each other end to end (one ring of a cylinder, or the
 // borders of several patches, which a double click on an edge picks whole). Every point of the first loop is paired with
 // the point of the second one at the same place along it, the second loop being turned (and its start moved round, if it
-// is closed) to the way that gives the shortest sides. The new patches have three rows, the loops and the straight
-// line half way between, so the sides are straight; the cut between two of them is wherever an edge of a loop ended,
-// so each one lies against exactly one border of the patches it joins.
+// is closed) to the way that gives the shortest sides. The new patches have three rows, the loops and a row half way
+// between; the cut between two of them is wherever an edge of a loop ended, so each one lies against exactly one border
+// of the patches it joins.
+//
+// Fill (Curve > Bridge Edge Loops) makes the sides straight. The Bevel button does the same for two loops that no
+// patch lies between: the middle row is then where the surfaces of the two patches, carried on past their borders,
+// meet (as for a bevel, so the strip leaves both of them along their surface), and the strip has the subdivisions
+// of the panel.
 // =============================================================================
 
 struct bridgeEdge_t
 {
 	std::vector<bevelPt_t> pts;     // the control points of the border, oriented along the loop
+	std::vector<bevelPt_t> out;     // for each: unit direction in which the surface of its patch goes on past the border (zero: unknown)
 	float count;                    // segments along it if its patch is segmented, else 0
 	float inward[3];                // unit direction into the patch it belongs to (zero if another patch shares the border)
 	brush_t *a;
@@ -3675,6 +3755,7 @@ struct bridgeEdge_t
 struct bridgeLoop_t
 {
 	std::vector<bevelPt_t> pts;     // the control points all along the loop
+	std::vector<bevelPt_t> out;     // as in bridgeEdge_t, for every point
 	std::vector<int> joints;        // where an edge of the loop begins, other than the first
 	std::vector<float> perSpan;     // segments per span of three control points, from the patches (0: ordinary patches)
 	bool closed;
@@ -3742,6 +3823,7 @@ static bool Bridge_Chain( const std::vector<bridgeEdge_t> &all, const std::vecto
 		return false; // more than two edges at a point: not one line
 	}
 	out.pts.clear();
+	out.out.clear();
 	out.joints.clear();
 	out.perSpan.clear();
 	VectorClear( out.inward );
@@ -3749,15 +3831,19 @@ static bool Bridge_Chain( const std::vector<bridgeEdge_t> &all, const std::vecto
 	for ( size_t i = 0; i < m; i++ )
 	{
 		const bridgeEdge_t &e = all[C[order[i]]];
-		std::vector<bevelPt_t> pts = e.pts;
+		std::vector<bevelPt_t> pts = e.pts, outs = e.out;
 		if ( rev[i] ) {
 			std::reverse( pts.begin(), pts.end() );
+			std::reverse( outs.begin(), outs.end() );
 		}
 		if ( i > 0 ) {
 			out.joints.push_back( (int)out.pts.size() - 1 );
 		}
 		for ( size_t k = ( i > 0 ? 1 : 0 ); k < pts.size(); k++ )
+		{
 			out.pts.push_back( pts[k] );
+			out.out.push_back( outs[k] );
+		}
 		const int spans = ( (int)pts.size() - 1 ) / 2;
 		for ( int s = 0; s < spans; s++ )
 			out.perSpan.push_back( e.count / spans );
@@ -3766,6 +3852,7 @@ static bool Bridge_Chain( const std::vector<bridgeEdge_t> &all, const std::vecto
 	out.closed = Bevel_SamePt( out.pts.front().v, out.pts.back().v );
 	if ( out.closed ) {
 		out.pts.back() = out.pts.front();
+		out.out.back() = out.out.front();
 	}
 	return true;
 }
@@ -3775,17 +3862,23 @@ static void Bridge_Turn( bridgeLoop_t &l, bool rev, int sh ){
 	const int P = (int)l.pts.size();
 	if ( rev ) {
 		std::reverse( l.pts.begin(), l.pts.end() );
+		std::reverse( l.out.begin(), l.out.end() );
 		std::reverse( l.perSpan.begin(), l.perSpan.end() );
 		for ( size_t i = 0; i < l.joints.size(); i++ )
 			l.joints[i] = P - 1 - l.joints[i];
 	}
 	if ( sh > 0 && l.closed ) {
 		const int N = P - 1, ns = (int)l.perSpan.size();
-		std::vector<bevelPt_t> q( P );
+		std::vector<bevelPt_t> q( P ), qo( P );
 		for ( int i = 0; i < N; i++ )
+		{
 			q[i] = l.pts[( i + 2 * sh ) % N];
+			qo[i] = l.out[( i + 2 * sh ) % N];
+		}
 		q[N] = q[0];
+		qo[N] = qo[0];
 		l.pts = q;
+		l.out = qo;
 		std::vector<float> ps( ns );
 		for ( int i = 0; i < ns; i++ )
 			ps[i] = l.perSpan[( i + sh ) % ns];
@@ -3810,9 +3903,13 @@ static bool Bridge_Positive( float f ){
 	return f > 0.0f;
 }
 
-int BevelEdges_Bridge(){
-	// the picked edges that are still there
+#define BRIDGE_SAY if ( !quiet ) Sys_Printf
+
+// The picked edges as two loops (loops[0], loops[1]); with groupOnly only whether they make two: *nLoops is set and the
+// loops are not worked out. quiet: no messages.
+static bool Bridge_Collect( bridgeLoop_t *loops, bool quiet, bool groupOnly, int *nLoops, bool *allFree ){
 	std::vector<bridgeEdge_t> all;
+	bool free = true;
 	for ( size_t i = 0; i < g_bevelEdges.size(); i++ )
 	{
 		const bevelEdge_t &e = g_bevelEdges[i];
@@ -3824,30 +3921,43 @@ int BevelEdges_Bridge(){
 		if ( n < 3 || Bevel_RimDegenerate( rim, n ) ) {
 			continue;
 		}
+		if ( e.b ) {
+			free = false;
+		}
 		bridgeEdge_t be;
 		be.pts.assign( rim, rim + n );
 		be.a = e.a;
 		const patchMesh_t *pa = e.a->pPatch;
 		be.count = pa->segH > 0 ? (float)( e.sideA < 2 ? pa->segV : pa->segH ) : 0.0f;
 		VectorClear( be.inward );
+		const bevelPt_t zero = { { 0, 0, 0 } };
+		be.out.assign( n, zero );
 		if ( e.b == NULL ) {
 			const bevelFrame_t f = Bevel_Frame( e.a->pPatch, e.sideA );
-			if ( f.m > 1 ) {
+			if ( f.m > 1 && f.n == n ) {
 				vec3_t sum = { 0, 0, 0 };
 				for ( int k = 0; k < f.n; k++ )
 				{
 					vec3_t d;
 					VectorSubtract( Bevel_At( f, k, 1 ).xyz, Bevel_At( f, k, 0 ).xyz, d );
 					VectorAdd( sum, d, sum );
+					VectorScale( d, -1.0f, d );
+					Bevel_Unit( d, be.out[k].v );
 				}
 				Bevel_Unit( sum, be.inward );
 			}
 		}
 		all.push_back( be );
 	}
+	if ( allFree ) {
+		*allFree = free;
+	}
 	if ( all.empty() ) {
-		Sys_Printf( "Bridge Edge Loops: pick two edge loops first (Alt+click an edge, double click for its whole loop, Ctrl+Alt adds more).\n" );
-		return 0;
+		if ( nLoops ) {
+			*nLoops = 0;
+		}
+		BRIDGE_SAY( "Bridge Edge Loops: pick two edge loops first (Alt+click an edge, double click for its whole loop, Ctrl+Alt adds more).\n" );
+		return false;
 	}
 
 	// which edges belong together: they touch end to end
@@ -3883,11 +3993,16 @@ int BevelEdges_Bridge(){
 		if ( std::find( labels.begin(), labels.end(), comp[i] ) == labels.end() ) {
 			labels.push_back( comp[i] );
 		}
-	if ( labels.size() != 2 ) {
-		Sys_Printf( "Bridge Edge Loops: the picked edges make %d loops, it needs exactly two (edges that touch end to end are one loop).\n", (int)labels.size() );
-		return 0;
+	if ( nLoops ) {
+		*nLoops = (int)labels.size();
 	}
-	bridgeLoop_t loops[2];
+	if ( labels.size() != 2 ) {
+		BRIDGE_SAY( "Bridge Edge Loops: the picked edges make %d loops, it needs exactly two (edges that touch end to end are one loop).\n", (int)labels.size() );
+		return false;
+	}
+	if ( groupOnly ) {
+		return true;
+	}
 	for ( int l = 0; l < 2; l++ )
 	{
 		std::vector<int> C;
@@ -3896,46 +4011,68 @@ int BevelEdges_Bridge(){
 				C.push_back( i );
 			}
 		if ( !Bridge_Chain( all, C, loops[l] ) ) {
-			Sys_Printf( "Bridge Edge Loops: loop %d branches (more than two picked edges meet at a point), it must be one line.\n", l + 1 );
-			return 0;
+			BRIDGE_SAY( "Bridge Edge Loops: loop %d branches (more than two picked edges meet at a point), it must be one line.\n", l + 1 );
+			return false;
 		}
 	}
 	bridgeLoop_t &LA = loops[0], &LB = loops[1];
 	if ( LA.pts.size() != LB.pts.size() ) {
-		Sys_Printf( "Bridge Edge Loops: the loops have %d and %d control points, they need the same number (the same amount of segments).\n",
+		BRIDGE_SAY( "Bridge Edge Loops: the loops have %d and %d control points, they need the same number (the same amount of segments).\n",
 					(int)LA.pts.size(), (int)LB.pts.size() );
-		return 0;
+		return false;
 	}
 	if ( LA.closed != LB.closed ) {
-		Sys_Printf( "Bridge Edge Loops: one loop is closed (a ring) and the other is open.\n" );
-		return 0;
+		BRIDGE_SAY( "Bridge Edge Loops: one loop is closed (a ring) and the other is open.\n" );
+		return false;
 	}
 	const int P = (int)LA.pts.size();
 
 	// the way round and the start of the second loop that give the shortest sides
-	{
-		float best = 1e30f;
-		bool bestRev = false;
-		int bestSh = 0;
-		const int spans = ( P - 1 ) / 2;
-		for ( int r = 0; r < 2; r++ )
-			for ( int sh = 0; sh < ( LB.closed ? spans : 1 ); sh++ )
-			{
-				bridgeLoop_t t = LB;
-				Bridge_Turn( t, r == 1, sh );
-				const float c = Bridge_Cost( LA, t );
-				if ( c < best - 1e-3f ) {
-					best = c;
-					bestRev = r == 1;
-					bestSh = sh;
-				}
+	float best = 1e30f;
+	bool bestRev = false;
+	int bestSh = 0;
+	const int spans = ( P - 1 ) / 2;
+	for ( int r = 0; r < 2; r++ )
+		for ( int sh = 0; sh < ( LB.closed ? spans : 1 ); sh++ )
+		{
+			bridgeLoop_t t = LB;
+			Bridge_Turn( t, r == 1, sh );
+			const float c = Bridge_Cost( LA, t );
+			if ( c < best - 1e-3f ) {
+				best = c;
+				bestRev = r == 1;
+				bestSh = sh;
 			}
-		Bridge_Turn( LB, bestRev, bestSh );
-		if ( sqrtf( best / P ) < 0.1f ) {
-			Sys_Printf( "Bridge Edge Loops: the two loops are in the same place.\n" );
-			return 0;
+		}
+	Bridge_Turn( LB, bestRev, bestSh );
+	if ( sqrtf( best / P ) < 0.1f ) {
+		BRIDGE_SAY( "Bridge Edge Loops: the two loops are in the same place.\n" );
+		return false;
+	}
+	return true;
+}
+
+// the number of segments for a piece of loop that has none from its patches: about one for every 11 degrees it turns
+static int Bridge_TurnCount( const bridgeLoop_t &L, int from, int to ){
+	double turn = 0;
+	for ( int i = from; i + 4 <= to; i += 2 )
+	{
+		vec3_t d0, d1, u0, u1;
+		VectorSubtract( L.pts[i + 2].v, L.pts[i].v, d0 );
+		VectorSubtract( L.pts[i + 4].v, L.pts[i + 2].v, d1 );
+		if ( Bevel_Unit( d0, u0 ) && Bevel_Unit( d1, u1 ) ) {
+			float c = DotProduct( u0, u1 );
+			c = c > 1.0f ? 1.0f : ( c < -1.0f ? -1.0f : c );
+			turn += acos( c ) * 180.0 / 3.14159265358979;
 		}
 	}
+	return turn < 2.0 ? 1 : (int)ceil( turn / 11.25 );
+}
+
+// curved: the Bevel button (the middle row follows the surfaces of the patches, nsub subdivisions across)
+static int Bridge_Make( bridgeLoop_t *loops, bool curved, int nsub ){
+	bridgeLoop_t &LA = loops[0], &LB = loops[1];
+	const int P = (int)LA.pts.size();
 
 	// the cuts between the new patches: where an edge of a loop ends, and no piece longer than a patch can be
 	std::vector<int> cut;
@@ -3966,7 +4103,8 @@ int BevelEdges_Bridge(){
 	// the segments of the new patches come from the patches they join (none of them segmented: ordinary patches)
 	const bool aSeg = std::find_if( LA.perSpan.begin(), LA.perSpan.end(), Bridge_Positive ) != LA.perSpan.end();
 	const std::vector<float> &per = aSeg ? LA.perSpan : LB.perSpan;
-	const bool segmented = std::find_if( per.begin(), per.end(), Bridge_Positive ) != per.end();
+	const bool known = std::find_if( per.begin(), per.end(), Bridge_Positive ) != per.end();
+	const bool segmented = known || curved;
 
 	// the patches, facing the way they come out of the rows (along the loop, then from the first loop to the second)
 	std::vector<patchMesh_t*> made;
@@ -3990,11 +4128,20 @@ int BevelEdges_Bridge(){
 		vec3_t nrm = { 0, 0, 0 }, mid = { 0, 0, 0 };
 		for ( int k = 0; k < s->width; k++ )
 		{
-			const float *a = LA.pts[from[pc] + k].v, *b = LB.pts[from[pc] + k].v;
+			const int ix = from[pc] + k;
+			const float *a = LA.pts[ix].v, *b = LB.pts[ix].v;
 			VectorCopy( a, s->ctrl[k][0].xyz );
 			VectorCopy( b, s->ctrl[k][2].xyz );
 			for ( int c = 0; c < 3; c++ )
 				s->ctrl[k][1].xyz[c] = 0.5f * ( a[c] + b[c] );
+			if ( curved ) {
+				const float *oa = LA.out[ix].v, *ob = LB.out[ix].v;
+				if ( oa[0] * oa[0] + oa[1] * oa[1] + oa[2] * oa[2] > 0.25f && ob[0] * ob[0] + ob[1] * ob[1] + ob[2] * ob[2] > 0.25f ) {
+					vec3_t tb;
+					VectorScale( ob, -1.0f, tb );
+					Bevel_Corner( a, oa, b, tb, s->ctrl[k][1].xyz ); // keeps the middle if the surfaces do not meet
+				}
+			}
 			VectorAdd( mid, s->ctrl[k][1].xyz, mid );
 		}
 		VectorScale( mid, 1.0f / s->width, mid );
@@ -4007,15 +4154,23 @@ int BevelEdges_Bridge(){
 			VectorAdd( nrm, x, nrm );
 		}
 		VectorAdd( total, nrm, total );
-		vec3_t out;
-		VectorSubtract( mid, centroid, out );
-		scoreSum += DotProduct( nrm, out );
+		vec3_t outv;
+		VectorSubtract( mid, centroid, outv );
+		scoreSum += DotProduct( nrm, outv );
 		if ( segmented ) {
-			float sum = 0;
-			for ( int sp = from[pc] / 2; sp < to[pc] / 2; sp++ )
-				sum += per[sp];
-			s->segH = SegPatch_ClampH( (int)floorf( sum + 0.5f ), SegPatch_MinH( s ) );
-			s->segV = 1;
+			int cnt;
+			if ( known ) {
+				float sum = 0;
+				for ( int sp = from[pc] / 2; sp < to[pc] / 2; sp++ )
+					sum += per[sp];
+				cnt = (int)floorf( sum + 0.5f );
+			}
+			else
+			{
+				cnt = Bridge_TurnCount( LA, from[pc], to[pc] );
+			}
+			s->segH = SegPatch_ClampH( cnt, SegPatch_MinH( s ) );
+			s->segV = curved ? SegPatch_ClampV( nsub ) : 1;
 		}
 		made.push_back( s );
 	}
@@ -4099,4 +4254,37 @@ int BevelEdges_Bridge(){
 	Sys_UpdateWindows( W_ALL );
 	Sys_Printf( "Bridge Edge Loops: %d patch(es) between two loops of %d control points%s.\n", (int)brushes.size(), P, segmented ? ", segmented" : "" );
 	return (int)brushes.size();
+}
+
+// Curve > Bridge Edge Loops: straight sides
+int BevelEdges_Bridge(){
+	bridgeLoop_t loops[2];
+	int n = 0;
+	if ( !Bridge_Collect( loops, false, false, &n, NULL ) ) {
+		return 0;
+	}
+	return Bridge_Make( loops, false, 1 );
+}
+
+// the picked edges are two loops that no patch lies between: the Bevel button then makes a strip between them
+bool BevelEdge_BridgeCase(){
+	int n = 0;
+	bool allFree = false;
+	if ( !Bridge_Collect( NULL, true, true, &n, &allFree ) ) {
+		return false;
+	}
+	return allFree && n == 2;
+}
+
+static int Bridge_FromBevel( int nsub ){
+	bridgeLoop_t loops[2];
+	int n = 0;
+	if ( !Bridge_Collect( loops, false, false, &n, NULL ) ) {
+		return 0;
+	}
+	return Bridge_Make( loops, true, nsub );
+}
+
+static bool Bridge_CaseForApply(){
+	return BevelEdge_BridgeCase();
 }

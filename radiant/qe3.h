@@ -495,6 +495,8 @@ int BevelEdges_Apply( float width, int nsub );
 // grid the cut borders of new (and edited) bevels are put on, 0 for none
 // fills the ring between two picked edge loops of the same size with patches; returns how many it made
 int BevelEdges_Bridge();
+// the picked edges are two loops that nothing lies between: the Bevel button makes a strip between them
+bool BevelEdge_BridgeCase();
 // makes the selected bevel strips adjustable again when their record was lost (a loaded map, an undo, an edit of the patches next to them)
 int Bevel_RecogniseCommand();
 void Bevel_SetSnap( float g );

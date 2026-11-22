@@ -367,7 +367,9 @@ void Select_Ray( vec3_t origin, vec3_t dir, int flags ){
 		g_qeglobals.d_select_mode = sel_brush_off;
 		Brush_RemoveFromList( t.brush );
 		Brush_AddToList( t.brush, &active_brushes );
-		PatchGroup_DeselectWhole( t.brush ); // the rest of its group goes with it
+		if ( !( flags & SF_NOGROUP ) ) {
+			PatchGroup_DeselectWhole( t.brush ); // the rest of its group goes with it
+		}
 
 		UpdatePatchInspector();
 	}
@@ -379,7 +381,9 @@ void Select_Ray( vec3_t origin, vec3_t dir, int flags ){
 
 		g_qeglobals.d_select_mode = sel_brush_on;
 		Select_Brush( t.brush, g_PrefsDlg.m_nCamDragMultiSelect == 1 ? Sys_AltDown() : !Sys_AltDown() );
-		PatchGroup_SelectWhole(); // a patch of a group brings the rest of the group along
+		if ( !( flags & SF_NOGROUP ) ) {
+			PatchGroup_SelectWhole(); // a patch of a group brings the rest of the group along
+		}
 	}
 	UpdateSurfaceDialog();
 	Sys_UpdateWindows( W_ALL );

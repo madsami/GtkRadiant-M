@@ -36,6 +36,7 @@ typedef struct
 #define SF_CAMERA         0x0040 // set when the operation happens through camera view, otherwise XY
 #define SF_DRAG_ON              0x0080
 #define SF_DRAG_OFF             0x0100
+#define SF_NOGROUP          0x0200 // a patch of a group is picked on its own, the rest of the group stays as it is
 #define SF_DRAG                     ( SF_DRAG_ON | SF_DRAG_OFF )
 
 trace_t Test_Ray( vec3_t origin, vec3_t dir, int flags );

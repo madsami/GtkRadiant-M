@@ -525,9 +525,10 @@ void Drag_Begin( int x, int y, int buttons,
 		}
 	}
 
-	// ctrl-alt-LBUTTON = multiple brush select without selecting whole entities
+	// ctrl-alt-LBUTTON = multiple brush select without selecting whole entities, and without selecting whole patch
+	// groups: one piece of a group can be picked ( or taken out of the selection ) on its own
 	if ( buttons == ( MK_LBUTTON | MK_CONTROL ) && altdown && g_qeglobals.d_select_mode != sel_curvepoint ) {
-		nFlag = 0;
+		nFlag = SF_NOGROUP;
 		if ( sf_camera ) {
 			nFlag |= SF_CAMERA;
 		}

@@ -2753,6 +2753,7 @@ static ZWnd *create_floating_zwnd( MainFrame *mainframe ){
 static const int gutter = 12;
 
 void MainFrame::Create(){
+	Sys_Printf( "Radiant fork build of %s %s\n", __DATE__, __TIME__ );
 	GtkWidget* window = gtk_window_new( GTK_WINDOW_TOPLEVEL );
 	m_pWidget = window;
 	gtk_widget_set_events( window, GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK );

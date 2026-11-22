@@ -2540,7 +2540,7 @@ void XYWnd::XY_DrawBlockGrid(){
 void XYWnd::DrawRotateIcon(){
 	float x, y, a, b;
 
-	a = 4.0 / m_fScale; // compensate for zoom level
+	a = 12.0 / m_fScale; // compensate for zoom level ( three times the size it had )
 	b = 6.0 / m_fScale;
 
 	if ( m_nViewType == XY ) {
@@ -2562,7 +2562,7 @@ void XYWnd::DrawRotateIcon(){
 	qglPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
 	qglDisable( GL_CULL_FACE );
 	qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-	qglColor4f( 0.8f, 0.1f, 0.9f, 0.25f );
+	qglColor4f( 0.8f, 0.1f, 0.9f, 0.6f );
 
 	qglBegin( GL_QUADS );
 	qglVertex3f( x - a,y - a,0 );
@@ -2573,9 +2573,19 @@ void XYWnd::DrawRotateIcon(){
 	qglDisable( GL_BLEND );
 
 	qglColor4f( 1.0f, 0.2f, 1.0f, 1.f );
+	qglLineWidth( 2 );
+	qglBegin( GL_LINE_LOOP );
+	qglVertex3f( x - a,y - a,0 );
+	qglVertex3f( x + a,y - a,0 );
+	qglVertex3f( x + a,y + a,0 );
+	qglVertex3f( x - a,y + a,0 );
+	qglEnd();
+	qglLineWidth( 1 );
+	qglPointSize( 7 );
 	qglBegin( GL_POINTS );
 	qglVertex3f( x,y,0 );
 	qglEnd();
+	qglPointSize( 1 );
 
 #if 0
 	qglBegin( GL_LINES );

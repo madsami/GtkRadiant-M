@@ -186,13 +186,13 @@ void RotFrame_DrawPivot(){
 	const float *c = g_pParentWnd->ActiveXY()->RotateOrigin();
 	vec3_t d;
 	VectorSubtract( c, g_pParentWnd->GetCamWnd()->Camera()->origin, d );
-	float s = VectorLength( d ) * 0.06f;
-	if ( s < 8.0f ) {
-		s = 8.0f;
+	float s = VectorLength( d ) * 0.18f; // three times the first size
+	if ( s < 24.0f ) {
+		s = 24.0f;
 	}
 	qglDisable( GL_TEXTURE_2D );
 	qglDisable( GL_DEPTH_TEST );
-	qglLineWidth( 2 );
+	qglLineWidth( 3 );
 	qglBegin( GL_LINES );
 	qglColor3f( 1.0f, 0.25f, 0.25f );
 	qglVertex3f( c[0] - s, c[1], c[2] );
@@ -205,7 +205,7 @@ void RotFrame_DrawPivot(){
 	qglVertex3f( c[0], c[1], c[2] + s );
 	qglEnd();
 	qglLineWidth( 1 );
-	qglPointSize( 7 );
+	qglPointSize( 14 );
 	qglColor3f( 1.0f, 0.2f, 1.0f );
 	qglBegin( GL_POINTS );
 	qglVertex3fv( c );

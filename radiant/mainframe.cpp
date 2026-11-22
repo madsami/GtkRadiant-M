@@ -652,6 +652,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_SEGTHICKEN: g_pParentWnd->OnCurveSegthicken(); break;
 		  case ID_CURVE_BEVELEDGE: g_pParentWnd->OnCurveBeveledge(); break;
 		  case ID_CURVE_BRIDGELOOPS: g_pParentWnd->OnCurveBridgeloops(); break;
+		  case ID_CURVE_BEVELRECOG: g_pParentWnd->OnCurveBevelrecognize(); break;
 		  case ID_CURVE_COG: g_pParentWnd->OnCurveCog(); break;
 		  case ID_CURVE_COGSELECT: g_pParentWnd->OnCurveCogSelect(); break;
 		  case ID_CURVE_GROUPMERGE: g_pParentWnd->OnCurveGroupMerge(); break;
@@ -1658,6 +1659,7 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Clear Seat Cut" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATCLEAR );
 		create_menu_item_with_mnemonic( menu, _( "Bevel Edge..." ), G_CALLBACK( HandleCommand ), ID_CURVE_BEVELEDGE );
 		create_menu_item_with_mnemonic( menu, _( "Bridge Edge Loops" ), G_CALLBACK( HandleCommand ), ID_CURVE_BRIDGELOOPS );
+		create_menu_item_with_mnemonic( menu, _( "Recognize Bevel (selected strip)" ), G_CALLBACK( HandleCommand ), ID_CURVE_BEVELRECOG );
 		create_menu_item_with_mnemonic( menu, _( "Make Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COG );
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COGSELECT );
 		menu_separator( menu );
@@ -6947,6 +6949,10 @@ void MainFrame::OnCurveBeveledge(){
 		return;
 	}
 	BevelPanel_Apply();
+}
+
+void MainFrame::OnCurveBevelrecognize(){
+	Bevel_RecogniseCommand();
 }
 
 void MainFrame::OnCurveBridgeloops(){

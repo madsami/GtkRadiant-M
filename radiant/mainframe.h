@@ -199,6 +199,7 @@ struct SKeyInfo
 #define ID_CURVE_STRAIGHTEDIT           40363
 #define ID_VIEW_CENTERONSEL             40364
 #define ID_CURVE_BRIDGELOOPS            40365
+#define ID_CURVE_BEVELRECOG             40366
 #define ID_CURVE_SEATCUT                40348
 #define ID_CURVE_SEATCLEAR              40349
 #define ID_CURVE_SEATSELECT             40350
@@ -858,6 +859,7 @@ void OnCurveSegcap();
 void OnCurveSegcaptop();
 void OnCurveSegcapbot();
 void OnCurveBridgeloops();
+void OnCurveBevelrecognize();
 void OnCurveSeatcut();
 void OnCurveSeatclear();
 void OnCurveSeatselect();

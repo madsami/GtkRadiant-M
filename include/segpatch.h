@@ -715,6 +715,54 @@ inline void SegPatch_EmitPoly( const segPoly_t &in, std::vector<segPoly_t> &out 
 	}
 }
 
+// The points of a run of hull corners that have to stay: the ones further than tol from the straight line between
+// the ends that are kept (Douglas-Peucker). The hull is convex, so every line left in place of dropped corners lies
+// inside it: what is not cut away then is only ever a sliver of the hull, never a bit too much of the host.
+inline void SegPatch_SimplifyRun( const segPoly_t &run, float tol, std::vector<char> &keep ){
+	const int n = (int)run.size();
+	keep.assign( n, 0 );
+	if ( n == 0 ) {
+		return;
+	}
+	keep[0] = keep[n - 1] = 1;
+	std::vector<std::pair<int, int> > todo;
+	todo.push_back( std::make_pair( 0, n - 1 ) );
+	while ( !todo.empty() )
+	{
+		const int a = todo.back().first, b = todo.back().second;
+		todo.pop_back();
+		if ( b - a < 2 ) {
+			continue;
+		}
+		const float *pa = run[a].xyz, *pb = run[b].xyz;
+		float ab[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] };
+		const float l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+		int farK = -1;
+		float farKD = tol;
+		for ( int k = a + 1; k < b; k++ )
+		{
+			const float *x = run[k].xyz;
+			float t = l2 > 1e-12f ? ( ( x[0] - pa[0] ) * ab[0] + ( x[1] - pa[1] ) * ab[1] + ( x[2] - pa[2] ) * ab[2] ) / l2 : 0.0f;
+			t = t < 0 ? 0 : ( t > 1 ? 1 : t );
+			float d[3] = { pa[0] + t * ab[0] - x[0], pa[1] + t * ab[1] - x[1], pa[2] + t * ab[2] - x[2] };
+			float dist = sqrtf( d[0] * d[0] + d[1] * d[1] + d[2] * d[2] );
+			// the farthest; of equal ones the one nearest the middle, so a run and its mirror image give the same result
+			if ( dist > farKD + 1e-3f || ( farK >= 0 && dist > farKD - 1e-3f && fabsf( k - 0.5f * ( a + b ) ) < fabsf( farK - 0.5f * ( a + b ) ) - 1e-4f ) ) {
+				farKD = dist > farKD ? dist : farKD;
+				farK = k;
+			}
+		}
+		if ( farK >= 0 ) {
+			keep[farK] = 1;
+			todo.push_back( std::make_pair( a, farK ) );
+			todo.push_back( std::make_pair( farK, b ) );
+		}
+	}
+}
+
+// how far a hull corner may be from the line between its neighbours and still be dropped (map units)
+#define SEGPATCH_CUT_TOL 1.0f
+
 // A convex polygon minus a hull. Returns 0 if the hull does not touch it (nothing added to out), 1 if it is
 // all inside, 2 if what is left of it was added to out (triangles and convex quads). The part inside is the
 // polygon cut by every plane, which does not depend on their order; what is left is read off the outline of that
@@ -757,7 +805,8 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 		cut[i] = along ? 0 : 1;
 	}
 
-	std::vector<segPoly_t> kept;
+	std::vector<segPoly_t> kept;    // what is left on each side of the polygon, as the hull really is
+	std::vector<segPoly_t> simple;  // the same with the hull corners that hardly bend left out
 	bool ok = true;
 	int chains = 0;
 	for ( int i = 0; i < nk && ok; i++ )
@@ -776,9 +825,20 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 		chains++;
 		// the kept part on this side: the run backwards (from where it ends to where it starts), then the outline of
 		// the polygon on from the start point round to the end point
-		segPoly_t poly;
+		segPoly_t poly, flat;
 		for ( int m = j; m >= i; m-- )
 			poly.push_back( K[m % nk] );
+		{
+			segPoly_t run; // the same run from where it starts to where it ends
+			for ( int m = i; m <= j; m++ )
+				run.push_back( K[m % nk] );
+			std::vector<char> keep;
+			SegPatch_SimplifyRun( run, SEGPATCH_CUT_TOL, keep );
+			for ( int m = (int)run.size() - 1; m >= 0; m-- )
+				if ( keep[m] ) {
+					flat.push_back( run[m] );
+				}
+		}
 		const float sP = pos[i], sQ = pos[e];
 		float dq = sQ - sP;
 		if ( dq <= 1e-4f ) {
@@ -796,9 +856,14 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 		}
 		std::sort( arc.begin(), arc.end() );
 		for ( size_t m = 0; m < arc.size(); m++ )
+		{
 			poly.push_back( A[arc[m].second] );
+			flat.push_back( A[arc[m].second] );
+		}
 		SegPatch_Tidy( poly );
+		SegPatch_Tidy( flat );
 		kept.push_back( poly );
+		simple.push_back( flat );
 	}
 	if ( ok && chains > 0 ) {
 		float sum = aK;
@@ -809,8 +874,8 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 		}
 	}
 	if ( ok && chains > 0 ) {
-		for ( size_t i = 0; i < kept.size(); i++ )
-			SegPatch_EmitPoly( kept[i], out );
+		for ( size_t i = 0; i < simple.size(); i++ )
+			SegPatch_EmitPoly( simple[i], out );
 		return 2;
 	}
 	// the hull is inside the polygon without touching its outline, or something odd: plane by plane

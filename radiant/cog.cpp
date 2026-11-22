@@ -1723,18 +1723,37 @@ bool Cog_CapSegmented( int which ){
 
 
 /*
-   Cone height: a segmented patch of three rows in which one end is a single point and the other a closed ring is a
-   cap (or any cone). The height of the tip over the plane of the ring can be set; the half-way row stays half way
-   between the ring and the tip, so the sides stay straight. Positive is towards the side the patch faces.
+   Cone height and inner radius: a segmented patch of three rows with a closed ring at one end is a cap. At the other
+   end it has either a single point (a cone, a filled cap) or a smaller ring of the same shape (a hole, a donut).
+   The height of the tip, or of the inner ring, over the plane of the outer ring can be set, and so can the radius of
+   the inner ring (0 is a point). The half-way row stays half way between the two ends, so the sides stay straight.
+   Positive is towards the side the patch faces.
  */
 struct coneInfo_t
 {
 	bool alongU;
 	int ringLine, apexLine;
-	float mid[3];       // middle of the ring
+	float mid[3];       // middle of the outer ring
 	float nF[3];        // unit normal of the ring plane, on the side the patch faces
-	float h;            // height of the tip over the ring plane along nF
+	float h;            // height of the tip (or inner ring) over the ring plane along nF
+	float rOut;         // mean distance of the points of the outer ring from its middle
+	float rIn;          // the same for the inner ring, 0 for a point
 };
+
+// mean distance of the on-curve points of a ring from a point
+static float Cap_Reach( const patchMesh_t *p, bool alongU, int line, const float *mid ){
+	const int n = alongU ? p->width : p->height;
+	float sum = 0;
+	int cnt = 0;
+	for ( int k = 0; k < n - 1; k += 2 )
+	{
+		float d[3];
+		VectorSubtract( Cap_Pt( p, alongU, line, k ), mid, d );
+		sum += VectorLength( d );
+		cnt++;
+	}
+	return cnt ? sum / cnt : 0.0f;
+}
 
 static bool Cone_Analyze( const patchMesh_t *p, coneInfo_t &c ){
 	if ( p->segH <= 0 ) {
@@ -1764,12 +1783,51 @@ static bool Cone_Analyze( const patchMesh_t *p, coneInfo_t &c ){
 			}
 		}
 	}
-	if ( collapsed[0] == collapsed[2] ) {
+	if ( collapsed[0] && collapsed[2] ) {
 		return false;
 	}
-	c.apexLine = collapsed[0] ? 0 : 2;
-	c.ringLine = 2 - c.apexLine;
+	if ( collapsed[0] != collapsed[2] ) {
+		c.apexLine = collapsed[0] ? 0 : 2;
+		c.ringLine = 2 - c.apexLine;
+	}
+	else
+	{
+		// two rings: a hole, if the smaller one is the bigger one turned down in size round its own middle
+		if ( p->cogId != 0 ) {
+			return false;
+		}
+		float m0[3], m2[3];
+		Cap_Middle( p, cu, 0, m0 );
+		Cap_Middle( p, cu, 2, m2 );
+		const float r0 = Cap_Reach( p, cu, 0, m0 ), r2 = Cap_Reach( p, cu, 2, m2 );
+		c.ringLine = r0 >= r2 ? 0 : 2;
+		c.apexLine = 2 - c.ringLine;
+		const float *mo = c.ringLine == 0 ? m0 : m2;
+		const float *mi = c.ringLine == 0 ? m2 : m0;
+		const float ro = c.ringLine == 0 ? r0 : r2, ri = c.ringLine == 0 ? r2 : r0;
+		if ( ri >= ro * 0.999f ) {
+			return false; // not smaller: a plain cylinder
+		}
+		const float sc = ri / ro;
+		for ( int k = 0; k < n; k++ )
+		{
+			const float *po = Cap_Pt( p, cu, c.ringLine, k );
+			const float *pi = Cap_Pt( p, cu, c.apexLine, k );
+			const float *ph = Cap_Pt( p, cu, 1, k );
+			for ( int a = 0; a < 3; a++ )
+			{
+				if ( fabsf( ( pi[a] - mi[a] ) - sc * ( po[a] - mo[a] ) ) > 0.1f
+					 || fabsf( ph[a] - 0.5f * ( po[a] + pi[a] ) ) > 0.1f ) {
+					return false;
+				}
+			}
+		}
+	}
 	Cap_Middle( p, cu, c.ringLine, c.mid );
+	c.rOut = Cap_Reach( p, cu, c.ringLine, c.mid );
+	float inMid[3];
+	Cap_Middle( p, cu, c.apexLine, inMid );
+	c.rIn = collapsed[c.apexLine] ? 0.0f : Cap_Reach( p, cu, c.apexLine, inMid );
 	const float s = c.ringLine == 0 ? 1.0f : -1.0f;
 	float nrm[3] = { 0, 0, 0 };
 	for ( int k = 0; k + 2 < n; k += 2 )
@@ -1785,17 +1843,19 @@ static bool Cone_Analyze( const patchMesh_t *p, coneInfo_t &c ){
 		return false;
 	}
 	float d[3];
-	VectorSubtract( Cap_Pt( p, cu, c.apexLine, 0 ), c.mid, d );
+	VectorSubtract( inMid, c.mid, d );
 	c.h = DotProduct( d, c.nF );
 	return true;
 }
 
-bool Cone_Selected( float *height, const void **who ){
+bool Cone_Selected( float *height, float *inner, float *outer, const void **who ){
 	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
 	{
 		coneInfo_t c;
 		if ( b->patchBrush && b->pPatch && Cone_Analyze( b->pPatch, c ) ) {
 			*height = c.h;
+			*inner = c.rIn;
+			*outer = c.rOut;
 			*who = b->pPatch;
 			return true;
 		}
@@ -1803,9 +1863,10 @@ bool Cone_Selected( float *height, const void **who ){
 	return false;
 }
 
-bool Cone_SetHeight( float h ){
+// h and/or r may be NULL: that one is left as it is
+bool Cone_Set( const float *h, const float *r ){
 	int count = 0;
-	Undo_Start( "cone height" );
+	Undo_Start( "cap shape" );
 	Undo_AddBrushList( &selected_brushes );
 	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
 	{
@@ -1815,16 +1876,44 @@ bool Cone_SetHeight( float h ){
 			continue;
 		}
 		const int n = c.alongU ? p->width : p->height;
+		const float newH = h ? *h : c.h;
+		float newR = r ? *r : c.rIn;
+		newR = Cog_Max( 0.0f, Cog_Min( newR, c.rOut * 0.99f ) );
+		if ( newR < 0.1f ) {
+			newR = 0.0f;
+		}
+		const float sc = newR / c.rOut;
 		float apex[3];
-		VectorMA( c.mid, h, c.nF, apex );
+		VectorMA( c.mid, newH, c.nF, apex );
+		// the middle of the cap in the texture: the mean of the outer ring (the inner ring shrinks towards it)
+		float stc[2] = { 0, 0 };
+		int cnt = 0;
+		for ( int k = 0; k < n - 1; k += 2 )
+		{
+			const float *st = c.alongU ? p->ctrl[k][c.ringLine].st : p->ctrl[c.ringLine][k].st;
+			stc[0] += st[0];
+			stc[1] += st[1];
+			cnt++;
+		}
+		stc[0] /= cnt;
+		stc[1] /= cnt;
 		for ( int k = 0; k < n; k++ )
 		{
-			float *ring = c.alongU ? p->ctrl[k][c.ringLine].xyz : p->ctrl[c.ringLine][k].xyz;
-			float *tip = c.alongU ? p->ctrl[k][c.apexLine].xyz : p->ctrl[c.apexLine][k].xyz;
-			float *half = c.alongU ? p->ctrl[k][1].xyz : p->ctrl[1][k].xyz;
-			VectorCopy( apex, tip );
+			drawVert_t *ring = c.alongU ? &p->ctrl[k][c.ringLine] : &p->ctrl[c.ringLine][k];
+			drawVert_t *tip = c.alongU ? &p->ctrl[k][c.apexLine] : &p->ctrl[c.apexLine][k];
+			drawVert_t *half = c.alongU ? &p->ctrl[k][1] : &p->ctrl[1][k];
 			for ( int a = 0; a < 3; a++ )
-				half[a] = 0.5f * ( ring[a] + apex[a] );
+			{
+				tip->xyz[a] = apex[a] + sc * ( ring->xyz[a] - c.mid[a] );
+				half->xyz[a] = 0.5f * ( ring->xyz[a] + tip->xyz[a] );
+			}
+			if ( r ) {
+				for ( int a = 0; a < 2; a++ )
+				{
+					tip->st[a] = stc[a] + sc * ( ring->st[a] - stc[a] );
+					half->st[a] = 0.5f * ( ring->st[a] + tip->st[a] );
+				}
+			}
 		}
 		p->bDirty = true;
 		vec3_t vMin, vMax;

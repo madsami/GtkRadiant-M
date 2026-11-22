@@ -1716,17 +1716,23 @@ static gboolean CogPanelTick( gpointer data ){
 }
 
 // Floating window for a cone (a segmented cap): shows up by itself while one is selected and sets the height of its
-// tip over the plane of its ring. The half-way row follows, half way up.
-static GtkWidget *g_conePanel = NULL, *g_coneHeight = NULL;
+// tip over the plane of its ring. The half-way row follows, half way up. The inner radius turns the tip into a smaller
+// ring (a hole, so the cap becomes a donut); 0 is a point again.
+static GtkWidget *g_conePanel = NULL, *g_coneHeight = NULL, *g_coneInner = NULL;
 static bool g_coneListen = false;
 static const void *g_coneShown = NULL;
 static int g_coneX = -1, g_coneY = -1;
 static guint g_conePending = 0;
+static int g_conePendingMask = 0; // 1: height changed, 2: inner radius changed
 
 static gboolean ConePanelDeferred( gpointer data ){
 	g_conePending = 0;
-	if ( g_coneListen ) {
-		Cone_SetHeight( (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_coneHeight ) ) );
+	const int mask = g_conePendingMask;
+	g_conePendingMask = 0;
+	if ( g_coneListen && mask ) {
+		const float h = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_coneHeight ) );
+		const float r = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_coneInner ) );
+		Cone_Set( ( mask & 1 ) ? &h : NULL, ( mask & 2 ) ? &r : NULL );
 	}
 	return FALSE;
 }
@@ -1735,6 +1741,7 @@ static void OnConeChanged( GtkWidget *widget, gpointer data ){
 	if ( !g_coneListen ) {
 		return;
 	}
+	g_conePendingMask |= ( widget == g_coneInner ) ? 2 : 1;
 	if ( g_conePending ) {
 		g_source_remove( g_conePending );
 	}
@@ -1768,9 +1775,12 @@ static void ConePanelBuild(){
 	gtk_window_set_resizable( GTK_WINDOW( g_conePanel ), FALSE );
 	gtk_window_set_deletable( GTK_WINDOW( g_conePanel ), FALSE );
 
+	GtkWidget *vbox = gtk_vbox_new( FALSE, 4 );
+	gtk_container_set_border_width( GTK_CONTAINER( vbox ), 6 );
+	gtk_container_add( GTK_CONTAINER( g_conePanel ), vbox );
+	gtk_widget_show( vbox );
 	GtkWidget *hbox = gtk_hbox_new( FALSE, 6 );
-	gtk_container_set_border_width( GTK_CONTAINER( hbox ), 6 );
-	gtk_container_add( GTK_CONTAINER( g_conePanel ), hbox );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
 	gtk_widget_show( hbox );
 	GtkWidget *l = gtk_label_new( _( "Cone height" ) );
 	gtk_misc_set_alignment( GTK_MISC( l ), 0.0, 0.5 );
@@ -1782,6 +1792,19 @@ static void ConePanelBuild(){
 	gtk_box_pack_start( GTK_BOX( hbox ), g_coneHeight, TRUE, TRUE, 0 );
 	gtk_widget_show( g_coneHeight );
 	g_signal_connect( G_OBJECT( g_coneHeight ), "value-changed", G_CALLBACK( OnConeChanged ), NULL );
+	hbox = gtk_hbox_new( FALSE, 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
+	gtk_widget_show( hbox );
+	l = gtk_label_new( _( "Inner radius" ) );
+	gtk_misc_set_alignment( GTK_MISC( l ), 0.0, 0.5 );
+	gtk_box_pack_start( GTK_BOX( hbox ), l, FALSE, FALSE, 0 );
+	gtk_widget_show( l );
+	g_coneInner = gtk_spin_button_new( GTK_ADJUSTMENT( gtk_adjustment_new( 0, 0, 8192, 1, 8, 0 ) ), 1, 2 );
+	gtk_spin_button_set_numeric( GTK_SPIN_BUTTON( g_coneInner ), TRUE );
+	gtk_widget_set_tooltip_text( g_coneInner, _( "Radius of a hole in the middle of the cap, in units. 0 is a filled cap (the tip is a point). Above 0 the cap becomes a donut: a flat ring from the edge of the cylinder in to a smaller ring of this radius. The most is just under the radius of the cap itself" ) );
+	gtk_box_pack_start( GTK_BOX( hbox ), g_coneInner, TRUE, TRUE, 0 );
+	gtk_widget_show( g_coneInner );
+	g_signal_connect( G_OBJECT( g_coneInner ), "value-changed", G_CALLBACK( OnConeChanged ), NULL );
 	gtk_widget_add_events( g_conePanel, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK );
 	g_signal_connect( G_OBJECT( g_conePanel ), "enter-notify-event", G_CALLBACK( OnConeEnter ), NULL );
 	g_signal_connect( G_OBJECT( g_conePanel ), "leave-notify-event", G_CALLBACK( OnConeLeave ), NULL );
@@ -1791,9 +1814,9 @@ static gboolean ConePanelTick( gpointer data ){
 	if ( g_pParentWnd == NULL || g_pParentWnd->m_pWidget == NULL ) {
 		return TRUE;
 	}
-	float h = 0;
+	float h = 0, rIn = 0, rOut = 0;
 	const void *who = NULL;
-	const bool have = Cone_Selected( &h, &who );
+	const bool have = Cone_Selected( &h, &rIn, &rOut, &who );
 	if ( have && g_conePanel == NULL ) {
 		ConePanelBuild();
 	}
@@ -1803,7 +1826,9 @@ static gboolean ConePanelTick( gpointer data ){
 	if ( have ) {
 		if ( who != g_coneShown ) {
 			g_coneListen = false;
+			gtk_spin_button_set_range( GTK_SPIN_BUTTON( g_coneInner ), 0, floor( rOut * 0.99f * 100.0f ) / 100.0 );
 			gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_coneHeight ), h );
+			gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_coneInner ), rIn );
 			g_coneListen = true;
 			g_coneShown = who;
 		}

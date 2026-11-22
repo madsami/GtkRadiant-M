@@ -71,11 +71,12 @@ int Cog_SelectWhole();
 // segmented cylinders (or just the higher / lower one); the caps are independent of the cylinders.
 bool Cog_CapSegmented( int which ); // which: 0 both ends, 1 the higher end only, 2 the lower end only
 
-// Cone height: the first selected cone (a segmented patch of three rows with a ring at one end and a point at the
-// other) reports the height of its tip over the plane of the ring, positive on the side it faces. Setting it moves
-// the tip of every selected cone and keeps the half-way row half way up.
-bool Cone_Selected( float *height, const void **who );
-bool Cone_SetHeight( float h );
+// Cone height and inner radius: the first selected cap (a segmented patch of three rows with a ring at one end and a
+// point, or a smaller ring of the same shape, at the other) reports the height of its tip over the plane of the ring,
+// positive on the side it faces, and the radius of the inner ring (0 for a point). Setting them moves the tip of
+// every selected cap and keeps the half-way row half way up. A radius above 0 makes the cap a donut (a hole).
+bool Cone_Selected( float *height, float *inner, float *outer, const void **who ); // inner/outer: radius of the hole (0 none) and of the cap
+bool Cone_Set( const float *height, const float *inner ); // a NULL one is left as it is
 
 // Make the selected cog again with other numbers (its patches are replaced, with one undo step).
 bool Cog_Rebuild( const cogRec_t &r );

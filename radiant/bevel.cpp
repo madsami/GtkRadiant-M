@@ -3074,22 +3074,58 @@ struct untrimCand_t
 
 // The width of the cut at t: the length of the original first span up to t, averaged along the border.
 static float Bevel_UntrimWidth( const bevelFrame_t &f, float t ){
+	// The bevel cut every column by the same arc length w and then used the average of the curve parameters for all of
+	// them (Bevel_TrimParam), so on columns of different lengths (a fan piece, a tapering patch, collapsed columns) the cut
+	// is not w long everywhere. The w that was asked for is found from the t that was read.
 	const float u = 1.0f - t;
-	float wsum = 0;
-	int wn = 0;
+	std::vector<float> tables;
+	float longest = 0;
 	for ( int k = 0; k < f.n; k += 2 )
 	{
 		const drawVert_t &v0 = Bevel_At( f, k, 0 ), &v1 = Bevel_At( f, k, 1 ), &v2 = Bevel_At( f, k, 2 );
-		float d0[3], d1[3];
+		float d0[3], d1[3], cum[65];
 		for ( int c = 0; c < 3; c++ )
 		{
 			d0[c] = ( v0.xyz[c] - 2.0f * t * v1.xyz[c] + t * t * v2.xyz[c] ) / ( u * u );
 			d1[c] = ( v1.xyz[c] - t * v2.xyz[c] ) / u;
 		}
-		wsum += Bevel_SpanLenTo( d0, d1, v2.xyz, t );
-		wn++;
+		Bevel_SpanTable( d0, d1, v2.xyz, cum );
+		if ( cum[64] < 0.01f ) {
+			continue; // a collapsed column
+		}
+		if ( cum[64] > longest ) {
+			longest = cum[64];
+		}
+		tables.insert( tables.end(), cum, cum + 65 );
 	}
-	return wn ? wsum / wn : 0.0f;
+	const int cols = (int)( tables.size() / 65 );
+	if ( cols == 0 ) {
+		return 0.0f;
+	}
+	float lo = 0, hi = longest;
+	for ( int it = 0; it < 40; it++ )
+	{
+		const float w = 0.5f * ( lo + hi );
+		float sum = 0;
+		for ( int k = 0; k < cols; k++ )
+		{
+			const float *cum = &tables[k * 65];
+			int i = 1;
+			while ( i < 64 && cum[i] < w )
+				i++;
+			const float seg = cum[i] - cum[i - 1];
+			const float frac = seg > 1e-6f ? ( w - cum[i - 1] ) / seg : 0.0f;
+			sum += ( i - 1 + ( frac < 0 ? 0 : ( frac > 1 ? 1 : frac ) ) ) / 64.0f;
+		}
+		if ( sum / cols < t ) {
+			lo = w;
+		}
+		else
+		{
+			hi = w;
+		}
+	}
+	return 0.5f * ( lo + hi );
 }
 
 // The ways the patch with the first span cut can be turned back into the original, best fit first. strip is the strip that

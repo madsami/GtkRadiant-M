@@ -739,7 +739,7 @@ void Seat_Draw(){
 		qglEnable( GL_BLEND );
 		qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
 		qglLineWidth( 1 );
-		qglColor4f( 0.1f, 0.9f, 1.0f, 0.55f );
+		qglColor4f( 0.1f, 0.9f, 1.0f, 0.275f );
 		for ( std::map<int, std::vector<float> >::iterator it = g_seatCue.begin(); it != g_seatCue.end(); ++it )
 		{
 			qglBegin( GL_LINES );

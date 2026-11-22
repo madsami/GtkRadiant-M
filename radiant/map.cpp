@@ -407,7 +407,10 @@ void Map_ImportEntities( CPtrArray *ents, bool bAddSelected = false ){
 				Patch_CalcBounds( b->pPatch, mins, maxs );
 				for ( int i = 0; i < 3; i++ )
 				{
-					if ( (int)mins[i] == (int)maxs[i] ) {
+					// Any extent under a unit is padded (same rule as AddBrushForPatch). Comparing the truncated values
+					// missed a nearly flat patch whose bounds straddle a whole number (713.6 .. 714): its brush was then
+					// snapped to zero thickness, "brush plane with no normal", and had no bounds, so it was never drawn.
+					if ( maxs[i] - mins[i] < 1.0f ) {
 						mins[i] -= 4;
 						maxs[i] += 4;
 					}

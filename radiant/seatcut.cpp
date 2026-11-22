@@ -762,8 +762,8 @@ void Seat_Draw(){
 
 	qglEnable( GL_BLEND );
 	qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-	qglLineWidth( 2 );
-	qglColor4f( 1.0f, 0.0f, 0.35f, 0.15f );
+	qglLineWidth( 3 );
+	qglColor4f( 1.0f, 0.0f, 0.35f, 0.2f );
 	for ( size_t i = 0; i < cutters.size(); i++ )
 	{
 		const segGrid_t *g = Patch_GetSegGrid( cutters[i] );

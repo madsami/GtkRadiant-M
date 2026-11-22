@@ -356,6 +356,21 @@ qboolean QE_SingleBrush( bool bQuiet = false );
 // sys stuff
 void Sys_MarkMapModified( void );
 
+// For work that only works something out again (recognising a bevel, cutting seat holes again): rebuilding patches marks the
+// map as changed, which it is not. The mark is put back as it was when this goes out of scope.
+struct MapModifiedKeep
+{
+	int was;
+	MapModifiedKeep() : was( modified ) {
+	}
+	~MapModifiedKeep(){
+		if ( was == 0 && modified != 0 ) {
+			modified = 0;
+			Sys_SetTitle( currentmap );
+		}
+	}
+};
+
 #if 0 // no longer used
 
 // QE Win32 function declarations

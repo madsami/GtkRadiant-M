@@ -3573,6 +3573,7 @@ static int Bevel_Heal( size_t i, bool force ){
 
 // The menu command: every selected patch that is the strip of a bevel and is not known as one becomes adjustable again.
 int Bevel_RecogniseCommand(){
+	MapModifiedKeep keep;
 	int found = 0, already = 0;
 	// strips that have a record that no longer fits: the record is made right, or replaced by what the shape tells
 	for ( size_t i = 0; i < g_bevelRecs.size(); )
@@ -3619,6 +3620,7 @@ int Bevel_RecogniseCommand(){
 
 // the selected strip of a bevel that can still be edited, with its numbers; NULL if there is none
 brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub, bool *bridge ){
+	MapModifiedKeep keep; // looking at a selection (and recognising bevels in it) changes nothing in the map
 	for ( size_t i = 0; i < g_bevelRecs.size(); )
 	{
 		if ( !Bevel_IsSelected( g_bevelRecs[i].strip ) ) {

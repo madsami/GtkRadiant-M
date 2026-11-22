@@ -415,9 +415,6 @@ static bool Seat_Apply( bool report ){
 				Sys_Printf( "Seat cut: a patch is reached by more than %d cutters, the cutter %d is left out there.\n", SEAT_MAX_HULLS, it->first );
 			}
 		}
-		if ( report ) {
-			Sys_Printf( "Seat cut: cutter %d (%d patches) cuts %d patch(es).\n", it->first, (int)it->second.size(), cuts );
-		}
 	}
 
 	bool changed = false;
@@ -506,6 +503,7 @@ static gboolean Seat_Tick( gpointer ){
 	}
 	if ( g_seatPending && ++g_seatStable >= 3 ) {
 		g_seatPending = false;
+		MapModifiedKeep keep; // the holes follow from the cutters (after a load, say): working them out again is not an edit
 		Seat_Recut();
 	}
 	return TRUE;

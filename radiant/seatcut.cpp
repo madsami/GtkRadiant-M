@@ -330,7 +330,7 @@ static bool Seat_Apply( bool report ){
 		h.g = NULL;
 		// every segmented patch can be cut, a cutter too (by the cutters that come before it), unless it was
 		// switched off ("Can be cut")
-		if ( all[i]->segH > 0 && !all[i]->seatNoCut ) {
+		if ( all[i]->segH > 0 && all[i]->seatCanCut ) {
 			h.g = Patch_GetSegGrid( all[i] );
 		}
 		if ( h.g ) {
@@ -469,7 +469,7 @@ static unsigned long long Seat_StateHash( bool *any ){
 		if ( p->segH <= 0 ) {
 			continue;
 		}
-		Seat_Mix( h, (unsigned int)( p->seatId * 2 + ( p->seatNoCut ? 1 : 0 ) ) );
+		Seat_Mix( h, (unsigned int)( p->seatId * 2 + ( p->seatCanCut ? 1 : 0 ) ) );
 		Seat_Mix( h, (unsigned int)( p->segH * 256 + p->segV ) );
 		Seat_Mix( h, (unsigned int)( p->width * 256 + p->height ) );
 		for ( int x = 0; x < p->width; x++ )
@@ -561,7 +561,7 @@ bool Seat_GetSelected( bool *isCutter, bool *canBeCut ){
 	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
 		if ( b->patchBrush && b->pPatch && b->pPatch->segH > 0 ) {
 			*isCutter = b->pPatch->seatId > 0;
-			*canBeCut = !b->pPatch->seatNoCut;
+			*canBeCut = b->pPatch->seatCanCut != 0;
 			return true;
 		}
 	return false;
@@ -601,7 +601,7 @@ bool Seat_SetCanBeCutSelected( bool can ){
 	bool any = false;
 	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
 		if ( b->patchBrush && b->pPatch && b->pPatch->segH > 0 ) {
-			b->pPatch->seatNoCut = can ? 0 : 1;
+			b->pPatch->seatCanCut = can ? 1 : 0;
 			any = true;
 		}
 	if ( any ) {
@@ -750,8 +750,10 @@ void Seat_Draw(){
 		qglDisable( GL_BLEND );
 	}
 
+	qglEnable( GL_BLEND );
+	qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
 	qglLineWidth( 3 );
-	qglColor3f( 0.1f, 0.9f, 1.0f );
+	qglColor4f( 0.1f, 0.9f, 1.0f, 0.5f );
 	for ( size_t i = 0; i < cutters.size(); i++ )
 	{
 		const segGrid_t *g = Patch_GetSegGrid( cutters[i] );

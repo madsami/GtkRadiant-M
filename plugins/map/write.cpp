@@ -108,7 +108,7 @@ static bool SegPatch_Write( patchMesh_t *p, IDataStream *out ){
 			Float_Write( p->cog[c], out );
 		out->printf( "\n" );
 	}
-	if ( p->seatId != 0 || p->seatCount > 0 || p->seatNoCut ) {
+	if ( p->seatId != 0 || p->seatCount > 0 || p->seatCanCut ) {
 		// seat cut (see seatcut.h): the id of the cutter this patch belongs to, then the hulls that cut a hole into it
 		// ( id, plane count, the planes ). Map_Read puts them into the size line of the cage.
 		out->printf( "//@seat seat %i %i ", p->seatId, p->seatCount );
@@ -119,8 +119,8 @@ static bool SegPatch_Write( patchMesh_t *p, IDataStream *out ){
 				for ( int c = 0; c < 4; c++ )
 					Float_Write( p->seat[h].pl[k][c], out );
 		}
-		if ( p->seatNoCut ) {
-			out->printf( "nocut " );
+		if ( p->seatCanCut ) {
+			out->printf( "cancut " );
 		}
 		out->printf( "\n" );
 	}

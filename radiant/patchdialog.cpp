@@ -1025,7 +1025,7 @@ static gboolean SegPanelTick( gpointer data ){
 		if ( !gtk_widget_has_focus( g_segPanelV ) && gtk_spin_button_get_value_as_int( GTK_SPIN_BUTTON( g_segPanelV ) ) != v ) {
 			gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_segPanelV ), v );
 		}
-		bool isCutter = false, canBeCut = true;
+		bool isCutter = false, canBeCut = false;
 		if ( Seat_GetSelected( &isCutter, &canBeCut ) ) {
 			if ( ( gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_seatCutBox ) ) ? true : false ) != isCutter ) {
 				gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( g_seatCutBox ), isCutter ? TRUE : FALSE );

@@ -238,12 +238,15 @@ void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 	GetToken( false );
 	GetToken( false );
 
-	pPatch->seatId = pPatch->seatCount = pPatch->seatNoCut = 0;
+	pPatch->seatId = pPatch->seatCount = pPatch->seatCanCut = 0;
 	GetToken( false ); //)
 	while ( strcmp( token, ")" ) )
 	{
-		if ( !strcmp( token, "nocut" ) ) {
-			pPatch->seatNoCut = 1; // "Can be cut" is off for this patch
+		if ( !strcmp( token, "cancut" ) ) {
+			pPatch->seatCanCut = 1; // "Can be cut" is on for this patch
+		}
+		else if ( !strcmp( token, "nocut" ) ) {
+			// written by an earlier version, where cutting was on unless switched off: nothing to do
 		}
 		else if ( !strcmp( token, "seat" ) ) {
 			// seat cut (see seatcut.h), put here by Segpatch_Preprocess: the cutter id of this patch, the number of hulls,
@@ -289,6 +292,9 @@ void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 		if ( !GetToken( false ) ) { //) or the next part
 			break;
 		}
+	}
+	if ( pPatch->seatCount > 0 ) {
+		pPatch->seatCanCut = 1; // saved with holes: it was cuttable
 	}
 
 	// parse matrix

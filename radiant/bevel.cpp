@@ -1300,16 +1300,163 @@ static void Bevel_Snap( const patchMesh_t *p, std::vector<float> &out ){
 		}
 }
 
-static bool Bevel_SnapSame( const patchMesh_t *p, const std::vector<float> &snap ){
+static bool Bevel_IsSelected( brush_t *b );
+
+// The patch is the snapshot, moved by d (a hair of float noise is allowed: a model that was rotated and turned back, or
+// moved by the Straight Edit round trip, is not bit for bit what it was)
+static bool Bevel_SnapNear( const patchMesh_t *p, const std::vector<float> &snap, const float *d ){
 	std::vector<float> now;
 	Bevel_Snap( p, now );
-	return now == snap;
+	if ( now.size() != snap.size() || now.size() < 2 || now[0] != snap[0] || now[1] != snap[1] ) {
+		return false;
+	}
+	for ( size_t i = 2; i + 2 < now.size() + 0; i += 3 )
+		for ( int k = 0; k < 3; k++ )
+			if ( fabsf( now[i + k] - ( snap[i + k] + ( d ? d[k] : 0.0f ) ) ) > 0.01f ) {
+				return false;
+			}
+	return true;
 }
 
-static bool Bevel_RecValid( const bevelRec_t &r ){
-	return Bevel_BrushLive( r.e.a ) && Bevel_BrushLive( r.e.b ) && Bevel_BrushLive( r.strip )
-		   && Bevel_SnapSame( r.e.a->pPatch, r.postA ) && Bevel_SnapSame( r.e.b->pPatch, r.postB )
-		   && Bevel_SnapSame( r.strip->pPatch, r.postS );
+static bool Bevel_SnapSame( const patchMesh_t *p, const std::vector<float> &snap ){
+	return Bevel_SnapNear( p, snap, NULL );
+}
+
+// A rigid move of the model keeps every bevel in it exactly as it is, only somewhere else. The records hold absolute
+// positions, so after a move they are carried along: a translation is found by comparing the patches with their
+// snapshots (whatever moved them: keys, dragging, undo), a rotation is told by Select_ApplyMatrix.
+struct bevelXf_t
+{
+	bool rot;
+	float d[3];
+	float org[3];
+	float M[3][3];
+	void Apply( float *p ) const {
+		if ( !rot ) {
+			for ( int k = 0; k < 3; k++ )
+				p[k] += d[k];
+			return;
+		}
+		float t[3] = { p[0] - org[0], p[1] - org[1], p[2] - org[2] };
+		for ( int j = 0; j < 3; j++ )
+			p[j] = DotProduct( t, M[j] ) + org[j];
+	}
+};
+
+// is the face of an extra (a neighbour that had a corner moved) one that moved with the model: most of its points
+// are where the transformed old points would be, rather than where the old ones were
+static bool Bevel_ExtraMoved( const bevelExtra_t &e, const bevelXf_t &x ){
+	if ( !Bevel_BrushLive( e.b ) ) {
+		return false;
+	}
+	const patchMesh_t *p = e.b->pPatch;
+	if ( (int)e.orig.size() != p->width * p->height ) {
+		return false;
+	}
+	int moved = 0, same = 0;
+	size_t n = 0;
+	for ( int i = 0; i < p->width; i++ )
+		for ( int j = 0; j < p->height; j++, n++ )
+		{
+			float q[3] = { e.orig[n].xyz[0], e.orig[n].xyz[1], e.orig[n].xyz[2] };
+			const float *c = p->ctrl[i][j].xyz;
+			if ( fabsf( q[0] - c[0] ) + fabsf( q[1] - c[1] ) + fabsf( q[2] - c[2] ) < 0.03f ) {
+				same++;
+			}
+			x.Apply( q );
+			if ( fabsf( q[0] - c[0] ) + fabsf( q[1] - c[1] ) + fabsf( q[2] - c[2] ) < 0.03f ) {
+				moved++;
+			}
+		}
+	return moved > same;
+}
+
+static void Bevel_XfVerts( std::vector<drawVert_t> &v, const bevelXf_t &x ){
+	for ( size_t i = 0; i < v.size(); i++ )
+		x.Apply( v[i].xyz );
+}
+
+static void Bevel_XfSnap( std::vector<float> &s, const bevelXf_t &x ){
+	for ( size_t i = 2; i + 2 < s.size(); i += 3 )
+		x.Apply( &s[i] );
+}
+
+static void Bevel_XfRec( bevelRec_t &r, const bevelXf_t &x ){
+	for ( size_t k = 0; k < r.extras.size(); k++ )
+		if ( Bevel_ExtraMoved( r.extras[k], x ) ) {
+			Bevel_XfVerts( r.extras[k].orig, x );
+		}
+	Bevel_XfVerts( r.origA, x );
+	Bevel_XfVerts( r.origB, x );
+	Bevel_XfSnap( r.postA, x );
+	Bevel_XfSnap( r.postB, x );
+	Bevel_XfSnap( r.postS, x );
+	for ( int i = 0; i < 2; i++ )
+		x.Apply( r.v0[i] );
+}
+
+static bool Bevel_RecLiveAll( const bevelRec_t &r ){
+	return Bevel_BrushLive( r.e.a ) && Bevel_BrushLive( r.e.b ) && Bevel_BrushLive( r.strip );
+}
+
+// the three patches of a record were all moved by the same amount: carry the record along
+static bool Bevel_TryShift( bevelRec_t &r ){
+	if ( !Bevel_RecLiveAll( r ) || r.postS.size() < 5 ) {
+		return false;
+	}
+	std::vector<float> now;
+	Bevel_Snap( r.strip->pPatch, now );
+	if ( now.size() != r.postS.size() ) {
+		return false;
+	}
+	bevelXf_t x;
+	x.rot = false;
+	for ( int k = 0; k < 3; k++ )
+		x.d[k] = now[2 + k] - r.postS[2 + k];
+	if ( fabsf( x.d[0] ) + fabsf( x.d[1] ) + fabsf( x.d[2] ) < 0.0005f ) {
+		return false; // not moved: something else changed
+	}
+	if ( !Bevel_SnapNear( r.e.a->pPatch, r.postA, x.d ) || !Bevel_SnapNear( r.e.b->pPatch, r.postB, x.d )
+		 || !Bevel_SnapNear( r.strip->pPatch, r.postS, x.d ) ) {
+		return false;
+	}
+	Bevel_XfRec( r, x );
+	return true;
+}
+
+static bool Bevel_RecValid( bevelRec_t &r ){
+	if ( !Bevel_RecLiveAll( r ) ) {
+		return false;
+	}
+	if ( Bevel_SnapSame( r.e.a->pPatch, r.postA ) && Bevel_SnapSame( r.e.b->pPatch, r.postB )
+		 && Bevel_SnapSame( r.strip->pPatch, r.postS ) ) {
+		return true;
+	}
+	return Bevel_TryShift( r );
+}
+
+// before a model is rotated: translations that happened since are taken up first (a rotation after a move is not a
+// rotation about the point the records were made at)
+void Bevel_RotateBegin(){
+	for ( size_t i = 0; i < g_bevelRecs.size(); i++ )
+		Bevel_RecValid( g_bevelRecs[i] );
+}
+
+// after Select_ApplyMatrix turned whole patches about origin (new = M * ( old - origin ) + origin): the records
+// whose three patches were in the selection turned with them
+void Bevel_RotateEnd( const float *origin, const vec3_t M[3] ){
+	bevelXf_t x;
+	x.rot = true;
+	VectorCopy( origin, x.org );
+	for ( int i = 0; i < 3; i++ )
+		VectorCopy( M[i], x.M[i] );
+	for ( size_t i = 0; i < g_bevelRecs.size(); i++ )
+	{
+		bevelRec_t &r = g_bevelRecs[i];
+		if ( Bevel_RecLiveAll( r ) && Bevel_IsSelected( r.e.a ) && Bevel_IsSelected( r.e.b ) && Bevel_IsSelected( r.strip ) ) {
+			Bevel_XfRec( r, x );
+		}
+	}
 }
 
 // Brushes that are already saved in the undo step being made. A patch that two beveled edges share must be saved
@@ -2921,6 +3068,7 @@ static void Bevel_PutBackAll( const std::vector<bevelRec_t*> &recs, std::vector<
 // (or each other) share one undo step. Bevels that share a patch with the edited ones are made again with their
 // own numbers, since the patch is put back first.
 int BevelRec_Edit( float width, int nsub ){
+	Bevel_RotateBegin(); // the bevels that share patches with the selected ones, moved with the model, are taken up too
 	std::vector<size_t> sel;
 	std::vector<bool> own;
 	for ( size_t i = 0; i < g_bevelRecs.size(); i++ )
@@ -3137,6 +3285,7 @@ int BevelRec_Edit( float width, int nsub ){
 // Takes the selected bevels away: both patches go back to how they were before the bevel, the strip is
 // deleted, and the edge is picked again, so the bevel can be made again from the panel. One undo step.
 int BevelRec_Remove(){
+	Bevel_RotateBegin();
 	std::vector<bevelRec_t> todo;
 	std::vector<size_t> idx;
 	for ( size_t i = 0; i < g_bevelRecs.size(); i++ )

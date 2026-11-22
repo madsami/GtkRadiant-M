@@ -488,6 +488,9 @@ float BevelEdge_MaxWidth();
 brush_t* BevelRec_Selected( float *width, float *maxW, int *nsub );
 int BevelRec_Edit( float width, int nsub );
 int BevelRec_Remove();
+// the bevel records follow a rotation of the patches they belong to (Select_ApplyMatrix)
+void Bevel_RotateBegin();
+void Bevel_RotateEnd( const float *origin, const vec3_t M[3] );
 int BevelEdges_Apply( float width, int nsub );
 void Patch_Transpose();
 void Patch_Freeze();

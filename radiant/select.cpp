@@ -706,6 +706,12 @@ void Select_ApplyMatrix( bool bSnap, bool bRotation, int nAxis, float fDeg ){ //
 	int i, j;
 	vec3_t temp, tmporigin;
 
+	// whole patches turned: the bevel records (bevel.cpp) are carried along, they hold absolute positions
+	const bool bevelCarry = bRotation && !( ( g_qeglobals.d_select_mode == sel_curvepoint && g_qeglobals.d_num_move_points != 0 ) || g_bPatchBendMode );
+	if ( bevelCarry ) {
+		Bevel_RotateBegin();
+	}
+
 	for ( b = selected_brushes.next ; b != &selected_brushes ; b = b->next )
 	{
 		if ( b->owner->eclass->fixedsize ) {
@@ -775,6 +781,9 @@ void Select_ApplyMatrix( bool bSnap, bool bRotation, int nAxis, float fDeg ){ //
 			}
 			Brush_Build( b, bSnap,true,false,false ); // don't filter
 		}
+	}
+	if ( bevelCarry ) {
+		Bevel_RotateEnd( select_origin, select_matrix );
 	}
 }
 

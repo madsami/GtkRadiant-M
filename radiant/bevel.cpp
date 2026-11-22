@@ -9,6 +9,7 @@
 #include <math.h>
 #include "bevel.h"
 #include "segpatch.h"
+#include "straight.h"
 
 #define BEVEL_PICK_EPSILON 8        // pick radius in pixels, like the vertex / edge picking
 
@@ -895,6 +896,9 @@ bool BevelEdge_Pick( vec3_t org, vec3_t dir, bool additive, bool camera ){
 
 // the picked edges, drawn on top of everything in both views
 void BevelEdge_Draw(){
+	if ( Straight_Active() ) {
+		return; // Straight Edit shows the map turned: the marked seams are not where they are drawn
+	}
 	for ( size_t i = 0; i < g_bevelEdges.size(); )
 	{
 		if ( Bevel_BrushLive( g_bevelEdges[i].a ) && ( g_bevelEdges[i].b == NULL || Bevel_BrushLive( g_bevelEdges[i].b ) ) ) {

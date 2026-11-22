@@ -197,6 +197,7 @@ struct SKeyInfo
 #define ID_CURVE_GROUPSPLIT             40361
 #define ID_CURVE_GROUPSELECT            40362
 #define ID_CURVE_STRAIGHTEDIT           40363
+#define ID_VIEW_CENTERONSEL             40364
 #define ID_CURVE_SEATCUT                40348
 #define ID_CURVE_SEATCLEAR              40349
 #define ID_CURVE_SEATSELECT             40350
@@ -754,6 +755,7 @@ void OnEditMapinfo();
 void OnEditEntityinfo();
 void OnBrushScripts();
 void OnViewCenterview();
+void OnViewCenterOnSelection();
 void OnViewNextview();
 void OnHelpCommandlist();
 void OnFileNewproject();

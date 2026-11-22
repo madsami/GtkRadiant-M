@@ -240,6 +240,7 @@ SCommandInfo g_Commands[] =
 	{"FileSave", GDK_KEY_S, 0x04, ID_FILE_SAVE, "menu_file_save"},
 	//% {"Exit", GDK_KEY_X, 0x04, ID_FILE_EXIT, "menu_file_exit"}, // ydnar: Ctrl+X should be cut
 	{"CenterXYView", GDK_KEY_Tab, 0x05, ID_VIEW_CENTERVIEW, "menu_view_centerview"},
+	{"CenterOnSelection", GDK_KEY_F, 0, ID_VIEW_CENTERONSEL, "menu_view_centeronsel"},
 	{"NextView", GDK_KEY_Tab, 0x04, ID_VIEW_NEXTVIEW, "menu_view_nextview"},
 	{"ClipSelected", GDK_KEY_Return, 0x00, ID_CLIP_SELECTED, "menu_clip_selected"},
 	{"SplitSelected", GDK_KEY_Return, 0x01, ID_SPLIT_SELECTED, "menu_split_selected"},
@@ -506,6 +507,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_VIEW_UPFLOOR: g_pParentWnd->OnViewUpfloor(); break;
 		  case ID_VIEW_DOWNFLOOR: g_pParentWnd->OnViewDownfloor(); break;
 		  case ID_VIEW_CENTERVIEW: g_pParentWnd->OnViewCenterview(); break;
+		  case ID_VIEW_CENTERONSEL: g_pParentWnd->OnViewCenterOnSelection(); break;
 		  case ID_VIEW_NEXTVIEW: g_pParentWnd->OnViewNextview(); break;
 		  case ID_VIEW_XY: g_pParentWnd->OnViewXy(); break;
 		  case ID_VIEW_SIDE: g_pParentWnd->OnViewSide(); break;
@@ -1179,6 +1181,7 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 	menu_separator( menu );
 	item = create_menu_item_with_mnemonic( menu, _( "_Center" ), G_CALLBACK( HandleCommand ), ID_VIEW_CENTER );
 	item = create_menu_item_with_mnemonic( menu, _( "_Center 2d" ), G_CALLBACK( HandleCommand ), ID_VIEW_CENTERVIEW );
+	item = create_menu_item_with_mnemonic( menu, _( "Center on _Selection" ), G_CALLBACK( HandleCommand ), ID_VIEW_CENTERONSEL );
 	item = create_menu_item_with_mnemonic( menu, _( "_Up Floor" ), G_CALLBACK( HandleCommand ), ID_VIEW_UPFLOOR );
 	item = create_menu_item_with_mnemonic( menu, _( "_Down Floor" ), G_CALLBACK( HandleCommand ), ID_VIEW_DOWNFLOOR );
 	menu_separator( menu );
@@ -5296,6 +5299,46 @@ void MainFrame::OnView100(){
 		m_pYZWnd->SetScale( 1 );
 	}
 	Sys_UpdateWindows( W_XY | W_XY_OVERLAY );
+}
+
+// F: bring the selection to the middle of the grid views and the camera (the camera keeps its angles and
+// backs away until the selection fits)
+void MainFrame::OnViewCenterOnSelection(){
+	if ( selected_brushes.next == &selected_brushes ) {
+		return;
+	}
+	vec3_t mins, maxs, mid;
+	Select_GetBounds( mins, maxs );
+	float radius = 0;
+	for ( int k = 0; k < 3; k++ )
+	{
+		mid[k] = ( mins[k] + maxs[k] ) * 0.5f;
+		const float h = ( maxs[k] - mins[k] ) * 0.5f;
+		radius += h * h;
+	}
+	radius = sqrtf( radius );
+
+	XYWnd *views[3] = { m_pXYWnd, m_pXZWnd, m_pYZWnd };
+	for ( int i = 0; i < 3; i++ )
+	{
+		if ( views[i] == NULL ) {
+			continue;
+		}
+		const int type = views[i]->GetViewType();
+		const int nDim1 = ( type == YZ ) ? 1 : 0;
+		const int nDim2 = ( type == XY ) ? 1 : 2;
+		vec3_t &o = views[i]->GetOrigin();
+		o[nDim1] = mid[nDim1];
+		o[nDim2] = mid[nDim2];
+	}
+
+	if ( m_pCamWnd ) {
+		camera_t *cam = m_pCamWnd->Camera();
+		const float dist = radius * 2.2f + 48.0f;
+		for ( int k = 0; k < 3; k++ )
+			cam->origin[k] = mid[k] - cam->vpn[k] * dist;
+	}
+	Sys_UpdateWindows( W_XY | W_XZ | W_YZ | W_CAMERA | W_Z );
 }
 
 // maximum zoom of the 2D views in pixels per unit (NetRadiant allows 64; this used to be 30, which

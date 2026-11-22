@@ -725,6 +725,9 @@ static bool Seat_SamePoint( const float *a, const float *b ){
 // Drawn in the grid views and the camera: the border of every active cutter patch in a bright colour (the seam of a
 // ring is left out), and, once the holes are up to date, the edges of the hull that cuts them.
 void Seat_Draw(){
+	if ( Straight_Active() ) {
+		return; // the outlines would sit where the cutters really are, not where Straight Edit shows them
+	}
 	std::vector<patchMesh_t*> all = Seat_AllPatches();
 	std::vector<patchMesh_t*> cutters;
 	for ( size_t i = 0; i < all.size(); i++ )

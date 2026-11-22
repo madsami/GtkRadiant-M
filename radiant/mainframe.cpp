@@ -651,6 +651,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_ROUNDDISPLAY: g_pParentWnd->OnCurveSegtoggle(); break;
 		  case ID_CURVE_SEGTHICKEN: g_pParentWnd->OnCurveSegthicken(); break;
 		  case ID_CURVE_BEVELEDGE: g_pParentWnd->OnCurveBeveledge(); break;
+		  case ID_CURVE_BRIDGELOOPS: g_pParentWnd->OnCurveBridgeloops(); break;
 		  case ID_CURVE_COG: g_pParentWnd->OnCurveCog(); break;
 		  case ID_CURVE_COGSELECT: g_pParentWnd->OnCurveCogSelect(); break;
 		  case ID_CURVE_GROUPMERGE: g_pParentWnd->OnCurveGroupMerge(); break;
@@ -1656,6 +1657,7 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Cutter" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATSELECT );
 		create_menu_item_with_mnemonic( menu, _( "Clear Seat Cut" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATCLEAR );
 		create_menu_item_with_mnemonic( menu, _( "Bevel Edge..." ), G_CALLBACK( HandleCommand ), ID_CURVE_BEVELEDGE );
+		create_menu_item_with_mnemonic( menu, _( "Bridge Edge Loops" ), G_CALLBACK( HandleCommand ), ID_CURVE_BRIDGELOOPS );
 		create_menu_item_with_mnemonic( menu, _( "Make Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COG );
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COGSELECT );
 		menu_separator( menu );
@@ -2145,6 +2147,10 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 								 new_image_icon("bevel_edge.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_BEVELEDGE ) );
 	g_object_set_data( G_OBJECT( window ), "tb_bevel_edge", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Bridge Edge Loops (fill the ring between two picked edge loops with the same number of points)" ), "",
+								 new_image_icon("bridge_loops.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_BRIDGELOOPS ) );
+	g_object_set_data( G_OBJECT( window ), "tb_bridge_loops", w );
 	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Make Cog (from a selected cylinder)" ), "",
 								 new_image_icon("cog.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_COG ) );
@@ -6941,6 +6947,12 @@ void MainFrame::OnCurveBeveledge(){
 		return;
 	}
 	BevelPanel_Apply();
+}
+
+void MainFrame::OnCurveBridgeloops(){
+	Undo_Start( "bridge edge loops" );
+	BevelEdges_Bridge();
+	Undo_End();
 }
 
 void MainFrame::OnCurveCog(){

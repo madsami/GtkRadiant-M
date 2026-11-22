@@ -3404,3 +3404,452 @@ int BevelRec_Remove(){
 	Sys_UpdateWindows( W_ALL );
 	return (int)todo.size();
 }
+
+// =============================================================================
+// Bridge edge loops
+//
+// Two picked edge loops with the same number of control points (an outer and an inner ring, say) get the ring between
+// them filled with patches. A loop is picked edges that follow each other end to end (one ring of a cylinder, or the
+// borders of several patches, which a double click on an edge picks whole). Every point of the first loop is paired with
+// the point of the second one at the same place along it, the second loop being turned (and its start moved round, if it
+// is closed) to the way that gives the shortest sides. The new patches have three rows, the loops and the straight
+// line half way between, so the sides are straight; the cut between two of them is wherever an edge of a loop ended,
+// so each one lies against exactly one border of the patches it joins.
+// =============================================================================
+
+struct bridgeEdge_t
+{
+	std::vector<bevelPt_t> pts;     // the control points of the border, oriented along the loop
+	float count;                    // segments along it if its patch is segmented, else 0
+	float inward[3];                // unit direction into the patch it belongs to (zero if another patch shares the border)
+	brush_t *a;
+};
+
+struct bridgeLoop_t
+{
+	std::vector<bevelPt_t> pts;     // the control points all along the loop
+	std::vector<int> joints;        // where an edge of the loop begins, other than the first
+	std::vector<float> perSpan;     // segments per span of three control points, from the patches (0: ordinary patches)
+	bool closed;
+	float inward[3];
+	brush_t *first;
+};
+
+// the picked edges that follow each other end to end, in order, as one chain
+static bool Bridge_Chain( const std::vector<bridgeEdge_t> &all, const std::vector<int> &C, bridgeLoop_t &out ){
+	const size_t m = C.size();
+	std::vector<char> used( m, 0 );
+	int start = -1;
+	bool startRev = false;
+	for ( size_t i = 0; i < m && start < 0; i++ )
+		for ( int end = 0; end < 2 && start < 0; end++ )
+		{
+			const float *pt = end == 0 ? all[C[i]].pts.front().v : all[C[i]].pts.back().v;
+			bool touched = false;
+			for ( size_t j = 0; j < m && !touched; j++ )
+				if ( j != i && ( Bevel_SamePt( pt, all[C[j]].pts.front().v ) || Bevel_SamePt( pt, all[C[j]].pts.back().v ) ) ) {
+					touched = true;
+				}
+			if ( !touched ) {
+				start = (int)i;
+				startRev = end == 1; // this end is the free one: it goes first
+			}
+		}
+	if ( start < 0 ) {
+		start = 0; // no free end: a ring of several edges
+		startRev = false;
+	}
+	std::vector<int> order;
+	std::vector<char> rev;
+	order.push_back( start );
+	rev.push_back( startRev );
+	used[start] = 1;
+	for (;; )
+	{
+		const bridgeEdge_t &last = all[C[order.back()]];
+		const float *v = rev.back() ? last.pts.front().v : last.pts.back().v;
+		int nxt = -1;
+		bool nrev = false;
+		for ( size_t j = 0; j < m && nxt < 0; j++ )
+		{
+			if ( used[j] ) {
+				continue;
+			}
+			if ( Bevel_SamePt( v, all[C[j]].pts.front().v ) ) {
+				nxt = (int)j;
+				nrev = false;
+			}
+			else if ( Bevel_SamePt( v, all[C[j]].pts.back().v ) ) {
+				nxt = (int)j;
+				nrev = true;
+			}
+		}
+		if ( nxt < 0 ) {
+			break;
+		}
+		used[nxt] = 1;
+		order.push_back( nxt );
+		rev.push_back( nrev );
+	}
+	if ( order.size() != m ) {
+		return false; // more than two edges at a point: not one line
+	}
+	out.pts.clear();
+	out.joints.clear();
+	out.perSpan.clear();
+	VectorClear( out.inward );
+	out.first = all[C[order[0]]].a;
+	for ( size_t i = 0; i < m; i++ )
+	{
+		const bridgeEdge_t &e = all[C[order[i]]];
+		std::vector<bevelPt_t> pts = e.pts;
+		if ( rev[i] ) {
+			std::reverse( pts.begin(), pts.end() );
+		}
+		if ( i > 0 ) {
+			out.joints.push_back( (int)out.pts.size() - 1 );
+		}
+		for ( size_t k = ( i > 0 ? 1 : 0 ); k < pts.size(); k++ )
+			out.pts.push_back( pts[k] );
+		const int spans = ( (int)pts.size() - 1 ) / 2;
+		for ( int s = 0; s < spans; s++ )
+			out.perSpan.push_back( e.count / spans );
+		VectorAdd( out.inward, e.inward, out.inward );
+	}
+	out.closed = Bevel_SamePt( out.pts.front().v, out.pts.back().v );
+	if ( out.closed ) {
+		out.pts.back() = out.pts.front();
+	}
+	return true;
+}
+
+// the loop turned round (rev) and its start moved on by sh spans (closed loops only), the same way for every list it keeps
+static void Bridge_Turn( bridgeLoop_t &l, bool rev, int sh ){
+	const int P = (int)l.pts.size();
+	if ( rev ) {
+		std::reverse( l.pts.begin(), l.pts.end() );
+		std::reverse( l.perSpan.begin(), l.perSpan.end() );
+		for ( size_t i = 0; i < l.joints.size(); i++ )
+			l.joints[i] = P - 1 - l.joints[i];
+	}
+	if ( sh > 0 && l.closed ) {
+		const int N = P - 1, ns = (int)l.perSpan.size();
+		std::vector<bevelPt_t> q( P );
+		for ( int i = 0; i < N; i++ )
+			q[i] = l.pts[( i + 2 * sh ) % N];
+		q[N] = q[0];
+		l.pts = q;
+		std::vector<float> ps( ns );
+		for ( int i = 0; i < ns; i++ )
+			ps[i] = l.perSpan[( i + sh ) % ns];
+		l.perSpan = ps;
+		for ( size_t i = 0; i < l.joints.size(); i++ )
+			l.joints[i] = ( ( l.joints[i] - 2 * sh ) % N + N ) % N;
+	}
+}
+
+static float Bridge_Cost( const bridgeLoop_t &a, const bridgeLoop_t &b ){
+	float sum = 0;
+	for ( size_t i = 0; i < a.pts.size(); i++ )
+	{
+		vec3_t d;
+		VectorSubtract( a.pts[i].v, b.pts[i].v, d );
+		sum += DotProduct( d, d );
+	}
+	return sum;
+}
+
+static bool Bridge_Positive( float f ){
+	return f > 0.0f;
+}
+
+int BevelEdges_Bridge(){
+	// the picked edges that are still there
+	std::vector<bridgeEdge_t> all;
+	for ( size_t i = 0; i < g_bevelEdges.size(); i++ )
+	{
+		const bevelEdge_t &e = g_bevelEdges[i];
+		if ( !Bevel_BrushLive( e.a ) || ( e.b && !Bevel_BrushLive( e.b ) ) ) {
+			continue;
+		}
+		bevelPt_t rim[MAX_PATCH_WIDTH];
+		const int n = Bevel_Rim( e.a->pPatch, e.sideA, rim );
+		if ( n < 3 || Bevel_RimDegenerate( rim, n ) ) {
+			continue;
+		}
+		bridgeEdge_t be;
+		be.pts.assign( rim, rim + n );
+		be.a = e.a;
+		const patchMesh_t *pa = e.a->pPatch;
+		be.count = pa->segH > 0 ? (float)( e.sideA < 2 ? pa->segV : pa->segH ) : 0.0f;
+		VectorClear( be.inward );
+		if ( e.b == NULL ) {
+			const bevelFrame_t f = Bevel_Frame( e.a->pPatch, e.sideA );
+			if ( f.m > 1 ) {
+				vec3_t sum = { 0, 0, 0 };
+				for ( int k = 0; k < f.n; k++ )
+				{
+					vec3_t d;
+					VectorSubtract( Bevel_At( f, k, 1 ).xyz, Bevel_At( f, k, 0 ).xyz, d );
+					VectorAdd( sum, d, sum );
+				}
+				Bevel_Unit( sum, be.inward );
+			}
+		}
+		all.push_back( be );
+	}
+	if ( all.empty() ) {
+		Sys_Printf( "Bridge Edge Loops: pick two edge loops first (Alt+click an edge, double click for its whole loop, Ctrl+Alt adds more).\n" );
+		return 0;
+	}
+
+	// which edges belong together: they touch end to end
+	const int E = (int)all.size();
+	std::vector<int> comp( E );
+	for ( int i = 0; i < E; i++ )
+		comp[i] = i;
+	for ( int pass = 0; pass < E; pass++ )
+	{
+		bool changed = false;
+		for ( int i = 0; i < E; i++ )
+			for ( int j = i + 1; j < E; j++ )
+			{
+				if ( comp[i] == comp[j] ) {
+					continue;
+				}
+				if ( Bevel_SamePt( all[i].pts.front().v, all[j].pts.front().v ) || Bevel_SamePt( all[i].pts.front().v, all[j].pts.back().v )
+					 || Bevel_SamePt( all[i].pts.back().v, all[j].pts.front().v ) || Bevel_SamePt( all[i].pts.back().v, all[j].pts.back().v ) ) {
+					const int lo = comp[i] < comp[j] ? comp[i] : comp[j], hi = comp[i] < comp[j] ? comp[j] : comp[i];
+					for ( int k = 0; k < E; k++ )
+						if ( comp[k] == hi ) {
+							comp[k] = lo;
+						}
+					changed = true;
+				}
+			}
+		if ( !changed ) {
+			break;
+		}
+	}
+	std::vector<int> labels;
+	for ( int i = 0; i < E; i++ )
+		if ( std::find( labels.begin(), labels.end(), comp[i] ) == labels.end() ) {
+			labels.push_back( comp[i] );
+		}
+	if ( labels.size() != 2 ) {
+		Sys_Printf( "Bridge Edge Loops: the picked edges make %d loops, it needs exactly two (edges that touch end to end are one loop).\n", (int)labels.size() );
+		return 0;
+	}
+	bridgeLoop_t loops[2];
+	for ( int l = 0; l < 2; l++ )
+	{
+		std::vector<int> C;
+		for ( int i = 0; i < E; i++ )
+			if ( comp[i] == labels[l] ) {
+				C.push_back( i );
+			}
+		if ( !Bridge_Chain( all, C, loops[l] ) ) {
+			Sys_Printf( "Bridge Edge Loops: loop %d branches (more than two picked edges meet at a point), it must be one line.\n", l + 1 );
+			return 0;
+		}
+	}
+	bridgeLoop_t &LA = loops[0], &LB = loops[1];
+	if ( LA.pts.size() != LB.pts.size() ) {
+		Sys_Printf( "Bridge Edge Loops: the loops have %d and %d control points, they need the same number (the same amount of segments).\n",
+					(int)LA.pts.size(), (int)LB.pts.size() );
+		return 0;
+	}
+	if ( LA.closed != LB.closed ) {
+		Sys_Printf( "Bridge Edge Loops: one loop is closed (a ring) and the other is open.\n" );
+		return 0;
+	}
+	const int P = (int)LA.pts.size();
+
+	// the way round and the start of the second loop that give the shortest sides
+	{
+		float best = 1e30f;
+		bool bestRev = false;
+		int bestSh = 0;
+		const int spans = ( P - 1 ) / 2;
+		for ( int r = 0; r < 2; r++ )
+			for ( int sh = 0; sh < ( LB.closed ? spans : 1 ); sh++ )
+			{
+				bridgeLoop_t t = LB;
+				Bridge_Turn( t, r == 1, sh );
+				const float c = Bridge_Cost( LA, t );
+				if ( c < best - 1e-3f ) {
+					best = c;
+					bestRev = r == 1;
+					bestSh = sh;
+				}
+			}
+		Bridge_Turn( LB, bestRev, bestSh );
+		if ( sqrtf( best / P ) < 0.1f ) {
+			Sys_Printf( "Bridge Edge Loops: the two loops are in the same place.\n" );
+			return 0;
+		}
+	}
+
+	// the cuts between the new patches: where an edge of a loop ends, and no piece longer than a patch can be
+	std::vector<int> cut;
+	cut.push_back( 0 );
+	cut.push_back( P - 1 );
+	for ( size_t i = 0; i < LA.joints.size(); i++ )
+		cut.push_back( LA.joints[i] );
+	for ( size_t i = 0; i < LB.joints.size(); i++ )
+		cut.push_back( LB.joints[i] );
+	std::sort( cut.begin(), cut.end() );
+	cut.erase( std::unique( cut.begin(), cut.end() ), cut.end() );
+	std::vector<int> from, to;
+	for ( size_t i = 0; i + 1 < cut.size(); i++ )
+	{
+		const int spans = ( cut[i + 1] - cut[i] ) / 2;
+		if ( spans < 1 ) {
+			continue;
+		}
+		std::vector<int> st, cn;
+		SegPatch_Split( spans, st, cn );
+		for ( size_t k = 0; k < st.size(); k++ )
+		{
+			from.push_back( cut[i] + 2 * st[k] );
+			to.push_back( cut[i] + 2 * ( st[k] + cn[k] ) );
+		}
+	}
+
+	// the segments of the new patches come from the patches they join (none of them segmented: ordinary patches)
+	const bool aSeg = std::find_if( LA.perSpan.begin(), LA.perSpan.end(), Bridge_Positive ) != LA.perSpan.end();
+	const std::vector<float> &per = aSeg ? LA.perSpan : LB.perSpan;
+	const bool segmented = std::find_if( per.begin(), per.end(), Bridge_Positive ) != per.end();
+
+	// the patches, facing the way they come out of the rows (along the loop, then from the first loop to the second)
+	std::vector<patchMesh_t*> made;
+	vec3_t total = { 0, 0, 0 }, centroid = { 0, 0, 0 };
+	for ( int k = 0; k < P; k++ )
+	{
+		VectorAdd( centroid, LA.pts[k].v, centroid );
+		VectorAdd( centroid, LB.pts[k].v, centroid );
+	}
+	VectorScale( centroid, 0.5f / P, centroid );
+	float scoreSum = 0;
+	patchMesh_t *src = LA.first->pPatch;
+	for ( size_t pc = 0; pc < from.size(); pc++ )
+	{
+		patchMesh_t *s = MakeNewPatch();
+		s->pShader = src->pShader;
+		s->d_texture = src->d_texture;
+		s->width = to[pc] - from[pc] + 1;
+		s->height = 3;
+		s->type = PATCH_GENERIC;
+		vec3_t nrm = { 0, 0, 0 }, mid = { 0, 0, 0 };
+		for ( int k = 0; k < s->width; k++ )
+		{
+			const float *a = LA.pts[from[pc] + k].v, *b = LB.pts[from[pc] + k].v;
+			VectorCopy( a, s->ctrl[k][0].xyz );
+			VectorCopy( b, s->ctrl[k][2].xyz );
+			for ( int c = 0; c < 3; c++ )
+				s->ctrl[k][1].xyz[c] = 0.5f * ( a[c] + b[c] );
+			VectorAdd( mid, s->ctrl[k][1].xyz, mid );
+		}
+		VectorScale( mid, 1.0f / s->width, mid );
+		for ( int k = 0; k + 2 < s->width; k += 2 )
+		{
+			vec3_t u, v, x;
+			VectorSubtract( s->ctrl[k + 2][0].xyz, s->ctrl[k][0].xyz, u );
+			VectorSubtract( s->ctrl[k][2].xyz, s->ctrl[k][0].xyz, v );
+			CrossProduct( u, v, x );
+			VectorAdd( nrm, x, nrm );
+		}
+		VectorAdd( total, nrm, total );
+		vec3_t out;
+		VectorSubtract( mid, centroid, out );
+		scoreSum += DotProduct( nrm, out );
+		if ( segmented ) {
+			float sum = 0;
+			for ( int sp = from[pc] / 2; sp < to[pc] / 2; sp++ )
+				sum += per[sp];
+			s->segH = SegPatch_ClampH( (int)floorf( sum + 0.5f ), SegPatch_MinH( s ) );
+			s->segV = 1;
+		}
+		made.push_back( s );
+	}
+
+	// which side is the front: away from the patches the loops come from (they run from the loop into the body
+	// of the object; the bridge closes it off on the other side). Where those cancel (two bodies with a gap
+	// between), outwards from the middle of the loops, and if the bridge is flat, up.
+	bool flip;
+	{
+		vec3_t D;
+		VectorAdd( LA.inward, LB.inward, D );
+		const float tl = VectorLength( total );
+		if ( VectorLength( D ) > 0.2f ) {
+			flip = DotProduct( total, D ) > 0;
+		}
+		else if ( tl > 1e-3f && fabsf( total[2] ) < 0.5f * tl ) {
+			flip = scoreSum < 0;
+		}
+		else
+		{
+			flip = total[2] < 0;
+		}
+	}
+	vec3_t nf;
+	VectorScale( total, flip ? -1.0f : 1.0f, nf );
+	if ( !Bevel_Unit( nf, nf ) ) {
+		nf[0] = 0;
+		nf[1] = 0;
+		nf[2] = 1;
+	}
+
+	// the texture lies flat, seen along the front, on a grid that does not depend on where the patches are cut
+	vec3_t e1, e2;
+	{
+		int ax = 0;
+		for ( int c = 1; c < 3; c++ )
+			if ( fabsf( nf[c] ) < fabsf( nf[ax] ) ) {
+				ax = c;
+			}
+		vec3_t axis = { 0, 0, 0 };
+		axis[ax] = 1.0f;
+		CrossProduct( nf, axis, e1 );
+		Bevel_Unit( e1, e1 );
+		CrossProduct( nf, e1, e2 );
+	}
+	float tw = src->pShader->getTexture()->width * g_PrefsDlg.m_fDefTextureScale;
+	float th = src->pShader->getTexture()->height * g_PrefsDlg.m_fDefTextureScale;
+	if ( tw < 1.0f ) {
+		tw = 1.0f;
+	}
+	if ( th < 1.0f ) {
+		th = 1.0f;
+	}
+
+	std::vector<brush_t*> brushes;
+	for ( size_t pc = 0; pc < made.size(); pc++ )
+	{
+		patchMesh_t *s = made[pc];
+		for ( int k = 0; k < s->width; k++ )
+			for ( int j = 0; j < 3; j++ )
+			{
+				s->ctrl[k][j].st[0] = DotProduct( s->ctrl[k][j].xyz, e1 ) / tw;
+				s->ctrl[k][j].st[1] = DotProduct( s->ctrl[k][j].xyz, e2 ) / th;
+			}
+		if ( flip ) {
+			patchInvert( s );
+		}
+		brush_t *sb = AddBrushForPatch( s, false );
+		Brush_AddToList( sb, &active_brushes );
+		Entity_LinkBrush( LA.first->owner ? LA.first->owner : world_entity, sb );
+		Brush_Build( sb );
+		s->bDirty = true;
+		Patch_Rebuild( s );
+		Undo_EndBrush( sb );
+		brushes.push_back( sb );
+	}
+	BevelEdge_Clear();
+	for ( size_t i = 0; i < brushes.size(); i++ )
+		Select_Brush( brushes[i] );
+	UpdatePatchInspector();
+	Sys_UpdateWindows( W_ALL );
+	Sys_Printf( "Bridge Edge Loops: %d patch(es) between two loops of %d control points%s.\n", (int)brushes.size(), P, segmented ? ", segmented" : "" );
+	return (int)brushes.size();
+}

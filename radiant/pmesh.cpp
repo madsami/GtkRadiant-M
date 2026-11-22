@@ -68,6 +68,7 @@ patchMesh_t* Patch_Alloc(){
 	pPatch->segH = pPatch->segV = 0;
 	pPatch->cogId = 0;
 	pPatch->groupId = 0;
+	pPatch->seatId = pPatch->seatCount = pPatch->seatCanCut = 0;
 
 	int i;
 	for ( i = 0; i < ( ( ( MAX_PATCH_WIDTH - 1 ) - 1 ) / 2 ); i++ )
@@ -88,6 +89,7 @@ patchMesh_t* MakeNewPatch(){
 	pm->segH = pm->segV = 0;
 	pm->cogId = 0;
 	pm->groupId = 0;
+	pm->seatId = pm->seatCount = pm->seatCanCut = 0;
 
 	return pm;
 }
@@ -3545,6 +3547,7 @@ struct segCache_t
 	std::vector<float> key;
 	segGrid_t grid;
 	std::vector<segPoint_t> normals; // only xyz is used
+	segCut_t cut;                    // the grid with the holes of the seat cutters (see SegPatch_Cut); empty without them
 };
 
 static std::map<const patchMesh_t*, segCache_t> g_segCache;
@@ -3565,6 +3568,11 @@ static segCache_t* Seg_GetCache( patchMesh_t *p ){
 			key.push_back( p->ctrl[i][j].st[0] );
 			key.push_back( p->ctrl[i][j].st[1] );
 		}
+	key.push_back( (float)p->seatCount );
+	for ( int h = 0; h < p->seatCount; h++ )
+		for ( int k = 0; k < p->seat[h].n; k++ )
+			for ( int a = 0; a < 4; a++ )
+				key.push_back( p->seat[h].pl[k][a] );
 
 	segCache_t &c = g_segCache[p];
 	if ( c.key != key ) {
@@ -3572,9 +3580,15 @@ static segCache_t* Seg_GetCache( patchMesh_t *p ){
 		c.grid.U = c.grid.V = 0;
 		c.grid.p.clear();
 		c.normals.clear();
+		c.cut.rects.clear();
+		c.cut.frags.clear();
+		c.cut.removed = 0;
 		if ( !SegPatch_BuildGrid( p, p->segH, p->segV, c.grid ) ) {
 			c.grid.U = c.grid.V = 0;
 			return NULL;
+		}
+		if ( p->seatCount > 0 ) {
+			SegPatch_Cut( c.grid, p->seat, p->seatCount, c.cut );
 		}
 
 		const int U = c.grid.U, V = c.grid.V;
@@ -3670,6 +3684,63 @@ static bool Patch_DrawSegMesh( patchMesh_t *pm ){
 		return false;
 	}
 	const int U = c->grid.U, V = c->grid.V;
+	if ( pm->seatCount > 0 ) {
+		// with holes: the rectangles of whole cells, then the cells that are cut by a hull
+		const segCut_t &ct = c->cut;
+		for ( size_t r = 0; r < ct.rects.size(); r++ )
+		{
+			for ( int vi = ct.rects[r].v0; vi < ct.rects[r].v1; vi++ )
+			{
+				qglBegin( GL_QUAD_STRIP );
+				for ( int ui = ct.rects[r].u0; ui <= ct.rects[r].u1; ui++ )
+				{
+					for ( int k = 0; k < 2; k++ )
+					{
+						const segPoint_t &g = c->grid.p[ui * V + vi + k];
+						qglNormal3fv( c->normals[ui * V + vi + k].xyz );
+						qglTexCoord2fv( g.st );
+						qglVertex3fv( g.xyz );
+					}
+				}
+				qglEnd();
+			}
+		}
+		qglBegin( GL_TRIANGLES );
+		for ( size_t f = 0; f < ct.frags.size(); f++ )
+		{
+			const segFrag_t &fr = ct.frags[f];
+			const size_t n = fr.poly.size();
+			for ( size_t i = 1; i + 1 < n; i++ )
+			{
+				// the cell is wound the other way round from the strips above
+				const segVert_t *tri[3] = { &fr.poly[0], &fr.poly[i + 1], &fr.poly[i] };
+				for ( int t = 0; t < 3; t++ )
+				{
+					// the vertex knows where on the grid it is (cell + fraction): the normals of the corners of that cell
+					int cu = (int)floorf( tri[t]->cu ), cv = (int)floorf( tri[t]->cv );
+					cu = cu < 0 ? 0 : ( cu > U - 2 ? U - 2 : cu );
+					cv = cv < 0 ? 0 : ( cv > V - 2 ? V - 2 : cv );
+					const float s = tri[t]->cu - cu, w = tri[t]->cv - cv;
+					const segPoint_t *nn[4] = { &c->normals[cu * V + cv], &c->normals[( cu + 1 ) * V + cv],
+												&c->normals[( cu + 1 ) * V + cv + 1], &c->normals[cu * V + cv + 1] };
+					float nrm[3];
+					for ( int a = 0; a < 3; a++ )
+						nrm[a] = ( 1 - s ) * ( 1 - w ) * nn[0]->xyz[a] + s * ( 1 - w ) * nn[1]->xyz[a] + s * w * nn[2]->xyz[a] + ( 1 - s ) * w * nn[3]->xyz[a];
+					float l = sqrtf( nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2] );
+					if ( l > 1e-6f ) {
+						nrm[0] /= l;
+						nrm[1] /= l;
+						nrm[2] /= l;
+					}
+					qglNormal3fv( nrm );
+					qglTexCoord2fv( tri[t]->st );
+					qglVertex3fv( tri[t]->xyz );
+				}
+			}
+		}
+		qglEnd();
+		return true;
+	}
 	for ( int vi = 0; vi + 1 < V; vi++ )
 	{
 		qglBegin( GL_QUAD_STRIP );
@@ -3686,6 +3757,15 @@ static bool Patch_DrawSegMesh( patchMesh_t *pm ){
 		qglEnd();
 	}
 	return true;
+}
+
+// the sampled grid of a segmented patch, for the seat cut (valid until the patch changes)
+const segGrid_t* Patch_GetSegGrid( patchMesh_t *p ){
+	if ( p->segH <= 0 ) {
+		return NULL;
+	}
+	segCache_t *c = Seg_GetCache( p );
+	return c ? &c->grid : NULL;
 }
 
 // the sampled grid a segmented patch is drawn from (used to follow its real outline)
@@ -4151,7 +4231,8 @@ static bool Patch_DirTo( const float *a, const float *b, vec3_t out ){
 // the two ends meet, which is where the regular cylinder puts it), and the rounding is applied to
 // that. So already rounded or hand-edited points are not rounded a second time, and the result is
 // the same however many times it is applied.
-static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out ){
+// regularOnly: stop at the regular position (the corner where the tangents meet), no pulling in, no snapping
+static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out, bool regularOnly = false ){
 	const float minArc = 0.15f;  // ~9 degrees
 	const float maxArc = 1.75f;  // ~100 degrees
 	bool changed = false;
@@ -4285,8 +4366,8 @@ static bool Patch_ComputeRounded( const patchMesh_t *p, roundedCtrl_t *out ){
 				}
 				float corner = 0.5f * ( ( A[a] + s * u[a] ) + ( B[a] + t * v[a] ) );
 				float mid = ( A[a] + B[a] ) * 0.5f;
-				float val = floorf( ( corner + sc * ( mid - corner ) ) / step + 0.5f ) * step;
-				if ( val != p->ctrl[i][j].xyz[a] ) {
+				float val = regularOnly ? corner : floorf( ( corner + sc * ( mid - corner ) ) / step + 0.5f ) * step;
+				if ( fabsf( val - p->ctrl[i][j].xyz[a] ) > ( regularOnly ? 0.001f : 0.0f ) ) {
 					changed = true;
 				}
 				out->v[i][j][a] = val;
@@ -4382,6 +4463,35 @@ void Patch_RoundSelected(){
 		Patch_CalcBounds( p, vMin, vMax );
 		Brush_RebuildBrush( p->pSymbiot, vMin, vMax );
 	}
+	UpdatePatchInspector();
+}
+
+// Puts the off-curve points of every row of the selected patches back on their regular corners: where the
+// tangents at the two on-curve neighbours meet. Undoes the hand adjusted "improved" corners; the on-curve
+// points, and so the bend of the patch in the other direction, are not touched.
+void Patch_RegularSelected(){
+	int count = 0;
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+	{
+		if ( !b->patchBrush ) {
+			continue;
+		}
+		patchMesh_t *p = b->pPatch;
+		roundedCtrl_t r;
+		if ( !Patch_ComputeRounded( p, &r, true ) ) {
+			continue;
+		}
+		for ( int i = 0; i < p->width; i++ )
+			for ( int j = 0; j < p->height; j++ )
+				VectorCopy( r.v[i][j], p->ctrl[i][j].xyz );
+
+		p->bDirty = true;
+		vec3_t vMin, vMax;
+		Patch_CalcBounds( p, vMin, vMax );
+		Brush_RebuildBrush( p->pSymbiot, vMin, vMax );
+		count++;
+	}
+	Sys_Printf( "Regular Corners: %d patch(es) changed.\n", count );
 	UpdatePatchInspector();
 }
 

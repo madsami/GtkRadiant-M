@@ -26,6 +26,7 @@
 //
 
 #include "stdafx.h"
+#include "seatcut.h"
 #include <gtk/gtk.h>
 #include <GL/gl.h>
 #include "glwidget.h"
@@ -1717,6 +1718,7 @@ void CamWnd::Cam_Draw(){
 	//
 	qglEnable( GL_DEPTH_TEST );
 	BevelEdge_Draw();
+	Seat_Draw();
 	DrawPathLines();
 
 	if ( g_qeglobals.d_pointfile_display_list ) {

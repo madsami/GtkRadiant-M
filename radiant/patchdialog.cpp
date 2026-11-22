@@ -29,6 +29,7 @@
 #include "stdafx.h"
 #include "segpatch.h"
 #include "cog.h"
+#include "seatcut.h"
 #include "patchdialog.h"
 #include <glib/gi18n.h>
 
@@ -1047,7 +1048,28 @@ static gboolean OnSegPanelLeave( GtkWidget *widget, GdkEventCrossing *event, gpo
 	return FALSE;
 }
 
-static void SegPanelBuild(){	GtkWidget *hbox, *label;
+static GtkWidget *g_seatCutBox = NULL;      // "Cut": the selected patch is a seat cutter (see seatcut.h)
+static GtkWidget *g_seatCanBox = NULL;      // "Can be cut": cutters may cut holes into it
+
+static void OnSeatBoxToggled( GtkWidget *widget, gpointer data ){
+	if ( !g_segPanelListen ) {
+		return;
+	}
+	const bool on = gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( widget ) ) ? true : false;
+	const bool cutBox = ( widget == g_seatCutBox );
+	Undo_Start( cutBox ? "seat cutter" : "seat cut: can be cut" );
+	Undo_AddBrushList( &selected_brushes );
+	if ( cutBox ) {
+		Seat_SetCutterSelected( on );
+	}
+	else{
+		Seat_SetCanBeCutSelected( on );
+	}
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
+static void SegPanelBuild(){	GtkWidget *hbox, *label, *vbox, *row2;
 	GtkAdjustment *adj;
 
 	g_segPanel = gtk_window_new( GTK_WINDOW_TOPLEVEL );
@@ -1060,10 +1082,30 @@ static void SegPanelBuild(){	GtkWidget *hbox, *label;
 	gtk_window_set_resizable( GTK_WINDOW( g_segPanel ), FALSE );
 	gtk_window_set_deletable( GTK_WINDOW( g_segPanel ), FALSE );
 
+	vbox = gtk_vbox_new( FALSE, 2 );
+	gtk_container_add( GTK_CONTAINER( g_segPanel ), vbox );
+	gtk_widget_show( vbox );
+
 	hbox = gtk_hbox_new( FALSE, 6 );
 	gtk_container_set_border_width( GTK_CONTAINER( hbox ), 6 );
-	gtk_container_add( GTK_CONTAINER( g_segPanel ), hbox );
+	gtk_box_pack_start( GTK_BOX( vbox ), hbox, FALSE, FALSE, 0 );
 	gtk_widget_show( hbox );
+
+	// second row: the seat cut switches
+	row2 = gtk_hbox_new( FALSE, 12 );
+	gtk_container_set_border_width( GTK_CONTAINER( row2 ), 6 );
+	gtk_box_pack_start( GTK_BOX( vbox ), row2, FALSE, FALSE, 0 );
+	gtk_widget_show( row2 );
+	g_seatCutBox = gtk_check_button_new_with_label( _( "Cut holes in others" ) );
+	gtk_widget_set_tooltip_text( g_seatCutBox, _( "Make this patch a cutter: every segmented patch it sits in gets a hole the shape of it, and follows it when it moves" ) );
+	gtk_box_pack_start( GTK_BOX( row2 ), g_seatCutBox, FALSE, FALSE, 0 );
+	gtk_widget_show( g_seatCutBox );
+	g_seatCanBox = gtk_check_button_new_with_label( _( "Can be cut" ) );
+	gtk_widget_set_tooltip_text( g_seatCanBox, _( "Off: no cutter makes a hole in this patch" ) );
+	gtk_box_pack_start( GTK_BOX( row2 ), g_seatCanBox, FALSE, FALSE, 0 );
+	gtk_widget_show( g_seatCanBox );
+	g_signal_connect( G_OBJECT( g_seatCutBox ), "toggled", G_CALLBACK( OnSeatBoxToggled ), NULL );
+	g_signal_connect( G_OBJECT( g_seatCanBox ), "toggled", G_CALLBACK( OnSeatBoxToggled ), NULL );
 
 	label = gtk_label_new( _( "Horizontal" ) );
 	gtk_box_pack_start( GTK_BOX( hbox ), label, FALSE, FALSE, 0 );
@@ -1113,6 +1155,15 @@ static gboolean SegPanelTick( gpointer data ){
 		}
 		if ( !gtk_widget_has_focus( g_segPanelV ) && gtk_spin_button_get_value_as_int( GTK_SPIN_BUTTON( g_segPanelV ) ) != v ) {
 			gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_segPanelV ), v );
+		}
+		bool isCutter = false, canBeCut = false;
+		if ( Seat_GetSelected( &isCutter, &canBeCut ) ) {
+			if ( ( gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_seatCutBox ) ) ? true : false ) != isCutter ) {
+				gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( g_seatCutBox ), isCutter ? TRUE : FALSE );
+			}
+			if ( ( gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_seatCanBox ) ) ? true : false ) != canBeCut ) {
+				gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( g_seatCanBox ), canBeCut ? TRUE : FALSE );
+			}
 		}
 		g_segPanelListen = true;
 

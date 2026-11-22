@@ -29,6 +29,7 @@
 #include "segpatch.h"
 #include "cog.h"
 #include "patchgroup.h"
+#include "seatcut.h"
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
 #include <gdk/gdkkeysyms.h>
@@ -639,6 +640,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_PATCHIMPROVEDCONE: g_pParentWnd->OnCurvePatchimprovedcone(); break;
 		  case ID_CURVE_ROUNDHINT: g_pParentWnd->OnCurveRoundhint(); break;
 		  case ID_CURVE_ROUNDSELECTED: g_pParentWnd->OnCurveRoundselected(); break;
+		  case ID_CURVE_REGULARSELECTED: g_pParentWnd->OnCurveRegularselected(); break;
 		  case ID_CURVE_SETHINT: g_pParentWnd->OnCurveSethint(); break;
 		  case ID_CURVE_PATCHHINTEDTUBE: g_pParentWnd->OnCurvePatchhintedtube(); break;
 		  case ID_CURVE_ROUNDCYLINDER: g_pParentWnd->OnCurveSegcylinder(); break;
@@ -653,6 +655,9 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_SEGCAP: g_pParentWnd->OnCurveSegcap(); break;
 		  case ID_CURVE_SEGCAPTOP: g_pParentWnd->OnCurveSegcaptop(); break;
 		  case ID_CURVE_SEGCAPBOT: g_pParentWnd->OnCurveSegcapbot(); break;
+		  case ID_CURVE_SEATCUT: g_pParentWnd->OnCurveSeatcut(); break;
+		  case ID_CURVE_SEATCLEAR: g_pParentWnd->OnCurveSeatclear(); break;
+		  case ID_CURVE_SEATSELECT: g_pParentWnd->OnCurveSeatselect(); break;
 		  case ID_CURVE_PATCHDENSETUBE: g_pParentWnd->OnCurvePatchdensetube(); break;
 		  case ID_CURVE_PATCHVERYDENSETUBE: g_pParentWnd->OnCurvePatchverydensetube(); break;
 		  case ID_CURVE_PATCHSQUARE: g_pParentWnd->OnCurvePatchsquare(); break;
@@ -1641,6 +1646,9 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Cap Segmented" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGCAP );
 		create_menu_item_with_mnemonic( menu, _( "Cap Segmented, Top" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGCAPTOP );
 		create_menu_item_with_mnemonic( menu, _( "Cap Segmented, Bottom" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGCAPBOT );
+		create_menu_item_with_mnemonic( menu, _( "Seat Cut (selected is the cutter)" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATCUT );
+		create_menu_item_with_mnemonic( menu, _( "Select Whole Cutter" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATSELECT );
+		create_menu_item_with_mnemonic( menu, _( "Clear Seat Cut" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATCLEAR );
 		create_menu_item_with_mnemonic( menu, _( "Bevel Edge..." ), G_CALLBACK( HandleCommand ), ID_CURVE_BEVELEDGE );
 		create_menu_item_with_mnemonic( menu, _( "Make Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COG );
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COGSELECT );
@@ -1665,6 +1673,7 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Toggle Rounded Hint" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDHINT );
 		create_menu_item_with_mnemonic( menu, _( "Set Hint From Selection" ), G_CALLBACK( HandleCommand ), ID_CURVE_SETHINT );
 		create_menu_item_with_mnemonic( menu, _( "Round Selected Patches" ), G_CALLBACK( HandleCommand ), ID_CURVE_ROUNDSELECTED );
+		create_menu_item_with_mnemonic( menu, _( "Restore Regular Corners" ), G_CALLBACK( HandleCommand ), ID_CURVE_REGULARSELECTED );
 		menu_separator( menu );
 		item = create_menu_item_with_mnemonic( menu, _( "Sphere" ),
 											   G_CALLBACK( HandleCommand ), ID_CURVE_PRIMITIVES_SPHERE );
@@ -2329,9 +2338,11 @@ void Clipboard_PasteMap(){
 	if ( g_Clipboard.GetLength() > 0 ) {
 		g_Clipboard.Seek( 0, SEEK_SET );
 		Cog_ImportBegin();
+		Seat_ImportBegin();
 		PatchGroup_ImportBegin();
 		Map_Import( &g_Clipboard, "xmap", true );
 		Cog_ImportEnd(); // a pasted or cloned cog is a cog of its own
+		Seat_ImportEnd(); // and so is a cutter
 		PatchGroup_ImportEnd(); // and so is a copy of a group
 	}
 }
@@ -3318,6 +3329,7 @@ void MainFrame::Create(){
 
 	m_nTimer = g_timeout_add( 1000, timer, this );
 	SegPanel_Init();
+	Seat_Init();
 }
 
 // =============================================================================
@@ -6840,6 +6852,14 @@ void MainFrame::OnCurveRoundselected(){
 	Undo_End();
 }
 
+void MainFrame::OnCurveRegularselected(){
+	Undo_Start( "restore regular corners" );
+	Undo_AddBrushList( &selected_brushes );
+	Patch_RegularSelected();
+	Sys_UpdateWindows( W_ALL );
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
 
 void MainFrame::OnCurveSegcylinder(){
 	Undo_Start( "make segmented cylinder" );
@@ -8343,4 +8363,24 @@ void MainFrame::OnCurveSegcaptop(){
 
 void MainFrame::OnCurveSegcapbot(){
 	Cog_CapSegmented( 2 );
+}
+
+void MainFrame::OnCurveSeatcut(){
+	Undo_Start( "seat cut" );
+	Undo_AddBrushList( &selected_brushes );
+	Seat_MakeSelected();
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
+void MainFrame::OnCurveSeatclear(){
+	Undo_Start( "clear seat cut" );
+	Undo_AddBrushList( &selected_brushes );
+	Seat_ClearSelected();
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+}
+
+void MainFrame::OnCurveSeatselect(){
+	Seat_SelectWhole();
 }

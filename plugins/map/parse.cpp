@@ -238,22 +238,68 @@ void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 	GetToken( false );
 	GetToken( false );
 
+	pPatch->seatId = pPatch->seatCount = pPatch->seatCanCut = 0;
 	GetToken( false ); //)
-	if ( !strcmp( token, "grp" ) ) {
-		// the group the patch is in (see patchgroup.h), put here by Segpatch_Preprocess
-		GetToken( false );
-		pPatch->groupId = atoi( token );
-		GetToken( false ); //)
-	}
-	if ( strcmp( token, ")" ) ) {
-		// the numbers of a cog (see cog.h): its id, then COG_NPARAM floats, put here by Segpatch_Preprocess
-		pPatch->cogId = atoi( token );
-		for ( i = 0; i < COG_NPARAM; i++ )
-		{
-			GetToken( false );
-			pPatch->cog[i] = (float)atof( token );
+	while ( strcmp( token, ")" ) )
+	{
+		if ( !strcmp( token, "cancut" ) ) {
+			pPatch->seatCanCut = 1; // "Can be cut" is on for this patch
 		}
-		GetToken( false ); //)
+		else if ( !strcmp( token, "nocut" ) ) {
+			// written by an earlier version, where cutting was on unless switched off: nothing to do
+		}
+		else if ( !strcmp( token, "grp" ) ) {
+			// patch group (see patchgroup.h), put here by Segpatch_Preprocess from "//@grp <id>"
+			GetToken( false );
+			pPatch->groupId = atoi( token );
+		}
+		else if ( !strcmp( token, "seat" ) ) {
+			// seat cut (see seatcut.h), put here by Segpatch_Preprocess: the cutter id of this patch, the number of hulls,
+			// then for every hull its cutter id, its plane count and the planes
+			GetToken( false );
+			pPatch->seatId = atoi( token );
+			GetToken( false );
+			int nHulls = atoi( token );
+			for ( int h = 0; h < nHulls; h++ )
+			{
+				GetToken( false );
+				int id = atoi( token );
+				GetToken( false );
+				int n = atoi( token );
+				seatHull_t *sh = ( pPatch->seatCount < SEAT_MAX_HULLS ) ? &pPatch->seat[pPatch->seatCount] : NULL;
+				if ( sh ) {
+					sh->id = id;
+					sh->n = ( n < SEAT_MAX_PLANES ) ? n : SEAT_MAX_PLANES;
+				}
+				for ( int k = 0; k < n; k++ )
+					for ( int c = 0; c < 4; c++ )
+					{
+						GetToken( false );
+						if ( sh && k < SEAT_MAX_PLANES ) {
+							sh->pl[k][c] = (float)atof( token );
+						}
+					}
+				if ( sh ) {
+					pPatch->seatCount++;
+				}
+			}
+		}
+		else
+		{
+			// the numbers of a cog (see cog.h): its id, then COG_NPARAM floats, put here by Segpatch_Preprocess
+			pPatch->cogId = atoi( token );
+			for ( i = 0; i < COG_NPARAM; i++ )
+			{
+				GetToken( false );
+				pPatch->cog[i] = (float)atof( token );
+			}
+		}
+		if ( !GetToken( false ) ) { //) or the next part
+			break;
+		}
+	}
+	if ( pPatch->seatCount > 0 ) {
+		pPatch->seatCanCut = 1; // saved with holes: it was cuttable
 	}
 
 	// parse matrix
@@ -634,6 +680,9 @@ static char* Segpatch_Preprocess( const char *buf ){
 	// The same for a patch in a group: "//@grp <id>" becomes "grp <id>" in front of the cog's numbers.
 	char grpText[32];
 	bool haveGrp = false;
+	// the same for the seat cut of a patch ( "//@seat seat <numbers>" ), see seatcut.h
+	const char *seatText = NULL;
+	size_t seatLen = 0;
 	while ( *p )
 	{
 		const char *nl = strchr( p, '\n' );
@@ -646,6 +695,16 @@ static char* Segpatch_Preprocess( const char *buf ){
 			p = next;
 			continue;
 		}
+		if ( !skipping && !strncmp( p, "//@seat ", 8 ) ) {
+			seatText = p + 8;
+			const char *e = nl ? nl : p + strlen( p );
+			while ( e > seatText && ( e[-1] == '\r' || e[-1] == ' ' ) )
+				e--;
+			seatLen = e - seatText;
+			p = next;
+			continue;
+		}
+
 		if ( !skipping && !strncmp( p, "//@cog ", 7 ) ) {
 			cogText = p + 7;
 			const char *e = nl ? nl : p + strlen( p );
@@ -655,7 +714,7 @@ static char* Segpatch_Preprocess( const char *buf ){
 			p = next;
 			continue;
 		}
-		if ( !skipping && ( cogText || haveGrp ) ) {
+		if ( !skipping && ( cogText || seatText || haveGrp ) ) {
 			const char *q = p;
 			while ( *q == ' ' || *q == '\t' )
 				q++;
@@ -688,9 +747,15 @@ static char* Segpatch_Preprocess( const char *buf ){
 					o += cogLen;
 					*o++ = ' ';
 				}
+				if ( seatText ) {
+					memcpy( o, seatText, seatLen );
+					o += seatLen;
+					*o++ = ' ';
+				}
 				memcpy( o, close, next - close );
 				o += next - close;
 				cogText = NULL;
+				seatText = NULL;
 				haveGrp = false;
 				p = next;
 				continue;

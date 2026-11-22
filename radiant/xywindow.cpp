@@ -26,6 +26,7 @@
 //
 
 #include "stdafx.h"
+#include "seatcut.h"
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
 #include <assert.h>
@@ -2965,6 +2966,7 @@ void XYWnd::XY_Draw(){
 	}
 
 	BevelEdge_Draw();
+	Seat_Draw();
 	DrawPathLines();
 
 	//

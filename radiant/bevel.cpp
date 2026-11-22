@@ -3065,19 +3065,49 @@ static float Bevel_SpanLenTo( const float *d0, const float *d1, const float *d2,
 	return cum[i] + ( cum[i + 1] - cum[i] ) * ( x - i );
 }
 
-// The patch with the first span cut at t is turned back into the original (its first two rows are changed). strip is the
-// strip that meets the border of the patch, rev: the border runs the other way round than the strip. The width of the cut
-// comes out in *width; false if the rows do not fit a cut at all.
-static bool Bevel_Untrim( patchMesh_t *p, int side, const patchMesh_t *strip, bool rev, float *width ){
+// One way the rows next to a border can be read as the cut of an original patch: the parameter t of the cut, how well
+// the rows fit it (rms, in units) and the width of the cut that results.
+struct untrimCand_t
+{
+	float t, rms, width;
+};
+
+// The width of the cut at t: the length of the original first span up to t, averaged along the border.
+static float Bevel_UntrimWidth( const bevelFrame_t &f, float t ){
+	const float u = 1.0f - t;
+	float wsum = 0;
+	int wn = 0;
+	for ( int k = 0; k < f.n; k += 2 )
+	{
+		const drawVert_t &v0 = Bevel_At( f, k, 0 ), &v1 = Bevel_At( f, k, 1 ), &v2 = Bevel_At( f, k, 2 );
+		float d0[3], d1[3];
+		for ( int c = 0; c < 3; c++ )
+		{
+			d0[c] = ( v0.xyz[c] - 2.0f * t * v1.xyz[c] + t * t * v2.xyz[c] ) / ( u * u );
+			d1[c] = ( v1.xyz[c] - t * v2.xyz[c] ) / u;
+		}
+		wsum += Bevel_SpanLenTo( d0, d1, v2.xyz, t );
+		wn++;
+	}
+	return wn ? wsum / wn : 0.0f;
+}
+
+// The ways the patch with the first span cut can be turned back into the original, best fit first. strip is the strip that
+// meets the border of the patch, rev: the border runs the other way round than the strip's. Several are listed because the
+// best fit alone can be a wrong one (a cut at the very end of the span fits nearly anything and gives a huge width).
+static void Bevel_UntrimCands( patchMesh_t *p, int side, const patchMesh_t *strip, bool rev, std::vector<untrimCand_t> &out ){
+	out.clear();
 	const bevelFrame_t f = Bevel_Frame( p, side );
 	const int n = f.n;
 	if ( f.m < 3 || ( f.m & 1 ) == 0 || strip->width != n || strip->height != 3 ) {
 		sprintf( g_recogWhy, "its side has %d points along the border and %d rows going in, the strip %d x %d", n, f.m, strip->width, strip->height );
-		return false;
+		return;
 	}
-	// the t that fits the most: the border row S, the row r behind it and the end d2 of the span are the cut of (d0, d1, d2),
-	// and d0 is the middle row of the strip: S - d0 = 2 t ( r - d0 ) + t^2 ( d0 - d2 )
-	float bestT = 0, bestCost = 1e30f;
+	// the border row S, the row r behind it and the end d2 of the span are the cut of ( d0, d1, d2 ) at t, and d0 is the
+	// middle row of the strip: S - d0 = 2 t ( r - d0 ) + t^2 ( d0 - d2 )
+	float rms[501];
+	for ( int step = 0; step <= 500; step++ )
+		rms[step] = 1e30f;
 	int cnt = 0;
 	for ( int step = 2; step <= 498; step++ )
 	{
@@ -3095,19 +3125,48 @@ static bool Bevel_Untrim( patchMesh_t *p, int side, const patchMesh_t *strip, bo
 			}
 			cnt++;
 		}
-		if ( cost < bestCost ) {
-			bestCost = cost;
-			bestT = t;
+		rms[step] = cnt ? sqrtf( cost / cnt ) : 1e30f;
+	}
+	float best = 1e30f;
+	for ( int step = 3; step <= 497; step++ )
+	{
+		if ( rms[step] < best ) {
+			best = rms[step];
+		}
+		// the dips of the fit; a cut of more than nine tenths of the span is not a bevel (its width cannot be told apart)
+		if ( step <= 450 && rms[step] < rms[step - 1] && rms[step] <= rms[step + 1] && rms[step] <= 3.0f ) {
+			untrimCand_t cd;
+			cd.t = step / 500.0f;
+			cd.rms = rms[step];
+			cd.width = Bevel_UntrimWidth( f, cd.t );
+			if ( cd.width > 0.01f ) {
+				out.push_back( cd );
+			}
 		}
 	}
-	if ( cnt == 0 || sqrtf( bestCost / cnt ) > 1.5f ) {
-		sprintf( g_recogWhy, "its two rows next to the border are not a cut of the surface that the strip's middle row would be the edge of (misfit %.2f units)", cnt ? sqrtf( bestCost / cnt ) : 0.0f );
-		return false;
+	// best fit first, a handful of them
+	for ( size_t i = 0; i < out.size(); i++ )
+		for ( size_t j = i + 1; j < out.size(); j++ )
+			if ( out[j].rms < out[i].rms ) {
+				const untrimCand_t tmp = out[i];
+				out[i] = out[j];
+				out[j] = tmp;
+			}
+	if ( out.size() > 6 ) {
+		out.resize( 6 );
 	}
-	const float t = bestT, u = 1.0f - t;
-	float wsum = 0;
-	int wn = 0;
-	for ( int k = 0; k < n; k++ )
+	if ( out.empty() ) {
+		sprintf( g_recogWhy, "its two rows next to the border are not a cut of the surface that the strip's middle row would be the edge of (misfit %.2f units)", best );
+	}
+}
+
+// The patch with the first span cut at t is turned back into the original (its first two rows are changed). The width of
+// the cut comes out in *width.
+static bool Bevel_UntrimAt( patchMesh_t *p, int side, float t, float *width ){
+	const bevelFrame_t f = Bevel_Frame( p, side );
+	const float u = 1.0f - t;
+	*width = Bevel_UntrimWidth( f, t );
+	for ( int k = 0; k < f.n; k++ )
 	{
 		drawVert_t &v0 = Bevel_At( f, k, 0 ), &v1 = Bevel_At( f, k, 1 ), &v2 = Bevel_At( f, k, 2 );
 		float d0[3], d1[3], d0s[2], d1s[2];
@@ -3121,10 +3180,6 @@ static bool Bevel_Untrim( patchMesh_t *p, int side, const patchMesh_t *strip, bo
 			d0s[c] = ( v0.st[c] - 2.0f * t * v1.st[c] + t * t * v2.st[c] ) / ( u * u );
 			d1s[c] = ( v1.st[c] - t * v2.st[c] ) / u;
 		}
-		if ( ( k & 1 ) == 0 ) {
-			wsum += Bevel_SpanLenTo( d0, d1, v2.xyz, t );
-			wn++;
-		}
 		VectorCopy( d0, v0.xyz );
 		VectorCopy( d1, v1.xyz );
 		for ( int c = 0; c < 2; c++ )
@@ -3133,7 +3188,6 @@ static bool Bevel_Untrim( patchMesh_t *p, int side, const patchMesh_t *strip, bo
 			v1.st[c] = d1s[c];
 		}
 	}
-	*width = wn ? wsum / wn : 0.0f;
 	return *width > 0.01f;
 }
 
@@ -3170,14 +3224,57 @@ static bool Bevel_TryRecognize( brush_t *strip, brush_t *X, int sx, bool revX, b
 	float wx = 0, wy = 0;
 	char why[300];
 	why[0] = 0;
-	if ( !Bevel_Untrim( px, sx, ps, revX, &wx ) ) {
+	std::vector<untrimCand_t> cx, cy;
+	bool picked = false;
+	Bevel_UntrimCands( px, sx, ps, revX, cx );
+	if ( cx.empty() ) {
 		sprintf( why, "the first patch: %s", g_recogWhy );
-	}
-	else if ( !Bevel_Untrim( py, sy, ps, revY, &wy ) ) {
-		sprintf( why, "the second patch: %s", g_recogWhy );
 	}
 	else
 	{
+		Bevel_UntrimCands( py, sy, ps, revY, cy );
+		if ( cy.empty() ) {
+			sprintf( why, "the second patch: %s", g_recogWhy );
+		}
+		else
+		{
+			g_recogStage = 2;
+			// the two sides were cut by the same width: the pair of readings whose widths agree is the right one
+			size_t bi = 0, bj = 0;
+			float bestScore = 1e30f;
+			for ( size_t i = 0; i < cx.size(); i++ )
+				for ( size_t j = 0; j < cy.size(); j++ )
+				{
+					const float wm = cx[i].width > cy[j].width ? cx[i].width : cy[j].width;
+					const float score = fabsf( cx[i].width - cy[j].width ) / wm + 0.01f * ( cx[i].rms + cy[j].rms );
+					if ( score < bestScore ) {
+						bestScore = score;
+						bi = i;
+						bj = j;
+					}
+				}
+			wx = cx[bi].width;
+			wy = cy[bj].width;
+			const float wm = wx > wy ? wx : wy;
+			if ( fabsf( wx - wy ) > 0.1f * wm + 0.3f ) {
+				char la[160], lb[160];
+				la[0] = lb[0] = 0;
+				for ( size_t i = 0; i < cx.size() && i < 3; i++ )
+					sprintf( la + strlen( la ), "%s%.2f (fit %.2f)", i ? ", " : "", cx[i].width, cx[i].rms );
+				for ( size_t j = 0; j < cy.size() && j < 3; j++ )
+					sprintf( lb + strlen( lb ), "%s%.2f (fit %.2f)", j ? ", " : "", cy[j].width, cy[j].rms );
+				sprintf( why, "the cut is %.2f wide on one patch and %.2f on the other (widths it could be read as: %s | %s)", wx, wy, la, lb );
+			}
+			else
+			{
+				float w1 = 0, w2 = 0;
+				Bevel_UntrimAt( px, sx, cx[bi].t, &w1 );
+				Bevel_UntrimAt( py, sy, cy[bj].t, &w2 );
+				picked = true;
+			}
+		}
+	}
+	if ( picked ) {
 		g_recogStage = 2;
 		const float wmax = wx > wy ? wx : wy;
 		if ( fabsf( wx - wy ) > 0.1f * wmax + 0.3f ) {

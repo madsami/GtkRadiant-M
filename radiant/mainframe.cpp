@@ -894,6 +894,15 @@ static gint mainframe_keypress( GtkWidget* widget, GdkEventKey* event, gpointer 
 #ifdef DBG_KBD
 	Sys_Printf( "mainframe_keypress processing into a command\n" );
 #endif
+	// the console: Ctrl+C (and Ctrl+Insert) copy the selected text instead of the copy command of the editor
+	if ( g_qeglobals_gui.d_edit != NULL && g_qeglobals_gui.d_edit == gtk_window_get_focus( GTK_WINDOW( widget ) )
+		 && ( event->state & GDK_CONTROL_MASK ) && !( event->state & GDK_MOD1_MASK ) && !( event->state & GDK_SHIFT_MASK )
+		 && ( event->keyval == GDK_KEY_c || event->keyval == GDK_KEY_C || event->keyval == GDK_KEY_Insert ) ) {
+		g_signal_emit_by_name( G_OBJECT( g_qeglobals_gui.d_edit ), "copy-clipboard" );
+		g_signal_stop_emission_by_name( G_OBJECT( widget ), "key-press-event" );
+		return TRUE;
+	}
+
 	if ( HandleFreeLookKey( code, event->state, true ) ) {
 		g_signal_stop_emission_by_name( G_OBJECT( widget ), "key-press-event" );
 		return FALSE;

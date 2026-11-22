@@ -3340,8 +3340,10 @@ static void Bevel_RecogniseSelected( bool force, int *found, int *tried ){
 				( *found )++;
 			}
 		}
-		else if ( force || g_recogStage >= 1 ) {
-			Sys_Printf( "Bevel Edge: this strip is not recognised as a bevel: %s.\n", g_recogWhy );
+		else
+		{
+			// said once for every state the patch is in (a three row patch that is not a bevel says so too)
+			Sys_Printf( "Bevel Edge: this patch is not recognised as a bevel strip (stage %d): %s.\n", g_recogStage, g_recogWhy );
 		}
 	}
 }
@@ -3422,7 +3424,12 @@ static int Bevel_Heal( size_t i, bool force ){
 		return 2;
 	}
 	g_bevelRecs.insert( g_bevelRecs.begin() + i, old );
-	Sys_Printf( "Bevel Edge: the patches next to this bevel no longer fit it (%s). It can be adjusted again when they do (undo, or move them back), or with Curve > Recognize Bevel.\n", g_recogWhy );
+	Sys_Printf( "Bevel Edge: the patches next to this bevel no longer fit it (%s). Patches alive %d/%d/%d, unchanged since the bevel was made %d/%d/%d (side A / side B / strip), %d x %d points on the strip. It can be adjusted again when they fit again (undo, or move them back), or with Curve > Recognize Bevel.\n",
+				g_recogWhy, Bevel_BrushLive( old.e.a ), Bevel_BrushLive( old.e.b ), Bevel_BrushLive( old.strip ),
+				Bevel_BrushLive( old.e.a ) && Bevel_SnapSame( old.e.a->pPatch, old.postA ),
+				Bevel_BrushLive( old.e.b ) && Bevel_SnapSame( old.e.b->pPatch, old.postB ),
+				Bevel_BrushLive( old.strip ) && Bevel_SnapSame( old.strip->pPatch, old.postS ),
+				old.strip->pPatch->width, old.strip->pPatch->height );
 	return 0;
 }
 

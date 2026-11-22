@@ -28,6 +28,29 @@ re-implemented in GtkRadiant's own GTK2 / OpenGL code:
 **Improved cylinders**, in the Curve menu: Improved Cylinder, End cap, Bevel and Cone. They build rounder patch
 cylinders than the stock ones, with corner points snapped to the grid.
 
+**Patchwork tools**, for maps built almost entirely from patches (most are in the Curve menu, many have a toolbar button):
+
+- Segmented patches: a patch can have a chosen number of segments across and along it, so circles are exact and a
+  tessellation is yours to set. Thicken Segmented makes a solid wall from a surface. Segment counts are kept in the
+  map file as `//@seg` comment lines, so other compile tools that ignore comments still read the map.
+- Caps and cones: Cap Segmented (top / bottom) closes a cylinder; a small panel sets the cone height and an inner
+  radius, so the cap can be a hole (a donut) instead of a filled disc.
+- Bevel Edge: Alt+click patch borders (double-click to follow a whole loop, Alt+drag to box-select), then set the
+  width, the subdivisions and a snap-to-grid in the Bevel panel. A bevel stays adjustable: its panel comes back when you
+  select the strip, it follows the model when it is moved or rotated, and it is recognised again from its shape after a
+  load, an undo or an edit of a neighbour (Curve > Recognize Bevel does it by hand). Inner corners are mitred and capped.
+- Bridge Edge Loops: pick two edge loops with the same number of points and fill the ring between them with patches.
+  With the same two loops picked, the Bevel button makes a rounded strip between them instead.
+- Make Cog: turns a cylinder into a cog (teeth inside or outside, taper, hole, sloped ends, bevelled rims) and makes a
+  matching socket, all editable in a panel. Select Whole Cog picks every piece.
+- Merge Selection (patch groups): tie patches into one piece that is picked and moved together; Ctrl+Alt+click picks a
+  single patch of a group.
+- Seat cut: a hole is cut into a segmented patch where a segmented cutter touches it, and follows the cutter when it moves.
+- Rotation: rotating a patch object is permanent and never snaps its points; the object remembers how far it was turned.
+  Straight Edit shows it straightened on the grid so you can keep editing it on the grid, then puts it back at its tilt.
+  Entities inside a rotated object turn with it. F centres the views on the selection.
+- Console: Ctrl+C copies the selected console text; crashes write a report instead of just closing.
+
 Also new: a magenta application icon.
 
 Building

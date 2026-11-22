@@ -119,6 +119,42 @@ static void ST_Message( const char *text ){
 	gtk_MessageBox( g_pParentWnd->m_pWidget, text, "Straight Edit" );
 }
 
+// The frame the view is turned by. The objects are axis-aligned after any frame of the form R * S, where S is one of the
+// 24 ways to lay a box onto the grid (a rotation that only permutes the axes and flips their signs). Taking the S that
+// leaves R * S the smallest turn keeps the objects lying the way they lie and turns the rest of the map as little as
+// possible; S = identity (the pose the objects were built in) is only chosen when that is the smallest.
+static void ST_SmallestTurn( const float R[9], float out[9] ){
+	static const int perm[6][3] = { { 0, 1, 2 }, { 0, 2, 1 }, { 1, 0, 2 }, { 1, 2, 0 }, { 2, 0, 1 }, { 2, 1, 0 } };
+	static const int parity[6] = { 1, -1, -1, 1, 1, -1 };
+	float best = -1e30f;
+	memcpy( out, R, 9 * sizeof( float ) );
+	for ( int p = 0; p < 6; p++ )
+		for ( int sg = 0; sg < 8; sg++ )
+		{
+			const float s[3] = { ( sg & 1 ) ? -1.0f : 1.0f, ( sg & 2 ) ? -1.0f : 1.0f, ( sg & 4 ) ? -1.0f : 1.0f };
+			if ( parity[p] * s[0] * s[1] * s[2] < 0 ) {
+				continue; // a mirror, not a turn
+			}
+			float S[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+			for ( int i = 0; i < 3; i++ )
+				S[i * 3 + perm[p][i]] = s[i];
+			float M[9];
+			for ( int i = 0; i < 3; i++ )
+				for ( int j = 0; j < 3; j++ )
+				{
+					M[i * 3 + j] = 0;
+					for ( int k = 0; k < 3; k++ )
+						M[i * 3 + j] += R[i * 3 + k] * S[k * 3 + j];
+				}
+			// the smaller the turn, the larger the trace
+			const float tr = M[0] + M[4] + M[8];
+			if ( tr > best + 1e-4f ) {
+				best = tr;
+				memcpy( out, M, sizeof( M ) );
+			}
+		}
+}
+
 static bool ST_Enter(){
 	if ( selected_brushes.next == &selected_brushes ) {
 		ST_Message( "Select the rotated object first." );
@@ -154,7 +190,7 @@ static bool ST_Enter(){
 		return false;
 	}
 
-	memcpy( g_stR, R, sizeof( R ) );
+	ST_SmallestTurn( R, g_stR );
 	Select_GetTrueMid( g_stP );
 
 	// the rest of the map stays where it is and is drawn turned: nothing in it can be picked or edited

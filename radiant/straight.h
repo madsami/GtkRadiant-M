@@ -5,10 +5,12 @@
    Straight Edit.
 
    A rotated object (patches with a rotation frame, see rotframe.h, and the entities that were turned with them) is
-   awkward to edit: nothing of it sits on the grid. Straight Edit puts it back for as long as you work on it. The
-   selected objects are turned by the inverse of their frame, round the middle of the selection, so they are
-   axis-aligned and every tool and the grid snapping work as usual, and the rest of the map is shown turned the
-   same way, grayed out (wire only) and out of reach: it is only drawn that way, none of its numbers change.
+   awkward to edit: nothing of it sits on the grid. Straight Edit lays it on the grid for as long as you work on it.
+   The selected objects are turned round the middle of the selection by the smallest turn that makes them
+   axis-aligned (the inverse of their frame, then whichever of the 24 grid orientations is nearest to how they lie
+   now, so a cylinder that lies on its side stays on its side and only the rest of the map turns about the vertical
+   axis). Every tool and the grid snapping work as usual, and the rest of the map is shown turned the same way,
+   grayed out (wire only) and out of reach: it is only drawn that way, none of its numbers change.
 
    Leaving the mode turns the objects (and anything made in the meantime, which is selected on leaving) back and
    gives them their frame again, so they are exactly where they were, plus whatever was done to them.

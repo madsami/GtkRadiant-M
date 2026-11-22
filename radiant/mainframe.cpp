@@ -2157,6 +2157,10 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 								 new_image_icon("group_split.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_GROUPSPLIT ) );
 	g_object_set_data( G_OBJECT( window ), "tb_group_split", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Straight Edit (rotated object), Ctrl+Shift+X or Esc to leave" ), "",
+								 new_image_icon("straight_edit.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_STRAIGHTEDIT ) );
+	g_object_set_data( G_OBJECT( window ), "tb_straight_edit", w );
 
 	/*
 	   uh? that is OLD

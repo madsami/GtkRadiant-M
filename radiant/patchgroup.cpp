@@ -4,6 +4,7 @@
 #include <vector>
 #include <algorithm>
 #include "patchgroup.h"
+#include "straight.h"
 
 static bool PG_IsGrouped( brush_t *b ){
 	return b->patchBrush && b->pPatch && b->pPatch->groupId != 0;
@@ -89,6 +90,9 @@ int PatchGroup_Split(){
 }
 
 int PatchGroup_SelectWhole( bool bPrint ){
+	if ( Straight_Active() ) {
+		return 0; // the rest of the map is out of reach while Straight Edit is on
+	}
 	std::vector<int> ids;
 	PG_SelectedIds( ids );
 	if ( ids.empty() ) {

@@ -27,6 +27,7 @@
 
 #include "stdafx.h"
 #include "seatcut.h"
+#include "straight.h"
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
 #include <assert.h>
@@ -2959,6 +2960,13 @@ void XYWnd::XY_Draw(){
 #endif
 
 		Brush_DrawXY( brush, m_nViewType );
+	}
+
+	// Straight Edit: the rest of the map, turned and grayed out
+	if ( Straight_Active() ) {
+		const float svmins[2] = { mins[0], mins[1] };
+		const float svmaxs[2] = { maxs[0], maxs[1] };
+		Straight_DrawGhostsXY( m_nViewType, nDim1, nDim2, svmins, svmaxs );
 	}
 
 	if ( m_bTiming ) {

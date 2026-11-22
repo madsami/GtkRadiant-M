@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <math.h>
 #include "cog.h"
+#include "straight.h"
 #include "bevel.h"
 #include "segpatch.h"
 
@@ -1230,6 +1231,9 @@ static bool Cog_InSelection( brush_t *b ){
 }
 
 int Cog_SelectWhole(){
+	if ( Straight_Active() ) {
+		return 0; // the rest of the map is out of reach while Straight Edit is on
+	}
 	std::vector<int> ids;
 	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
 		if ( b->patchBrush && b->pPatch && b->pPatch->cogId != 0 ) { // a patch of a cog, or of a bevel made on one

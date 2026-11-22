@@ -28,6 +28,7 @@
 #include "stdafx.h"
 #include "seatcut.h"
 #include "rotframe.h"
+#include "straight.h"
 #include <gtk/gtk.h>
 #include <GL/gl.h>
 #include "glwidget.h"
@@ -1345,6 +1346,89 @@ void CamWnd::Cam_DrawStuff(){
 	}
 
 	Cam_DrawWireOverlay();
+	Cam_DrawGhosts();
+}
+
+/*
+   ==============
+   Cam_DrawGhosts
+
+   Straight Edit (straight.h): the rest of the map as gray wire, turned like the selection was
+   ==============
+ */
+void CamWnd::Cam_DrawGhosts(){
+	if ( !Straight_Active() ) {
+		return;
+	}
+
+	GLint depthFunc;
+	qglGetIntegerv( GL_DEPTH_FUNC, &depthFunc );
+
+	qglPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+	qglDisable( GL_LIGHTING );
+	qglDisable( GL_COLOR_MATERIAL );
+	qglDisable( GL_TEXTURE_2D );
+	qglDisable( GL_CULL_FACE );
+	qglDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	qglDisableClientState( GL_NORMAL_ARRAY );
+	qglEnable( GL_BLEND );
+	qglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+	qglEnable( GL_DEPTH_TEST );
+	qglDepthFunc( GL_LEQUAL );
+	qglLineWidth( 1 );
+	qglColor4f( 0.62f, 0.62f, 0.70f, 0.6f );
+
+	float m[16];
+	Straight_GhostMatrix( m );
+	qglPushMatrix();
+	qglMultMatrixf( m );
+
+	for ( brush_t *b = active_brushes.next; b != &active_brushes; b = b->next )
+	{
+		if ( !b->ghost ) {
+			continue;
+		}
+
+		// cull with the box as it is shown
+		vec3_t omins, omaxs, gm, gx;
+		VectorCopy( b->mins, omins );
+		VectorCopy( b->maxs, omaxs );
+		Straight_GhostBounds( omins, omaxs, gm, gx );
+		VectorCopy( gm, b->mins );
+		VectorCopy( gx, b->maxs );
+		const qboolean culled = CullBrush( b );
+		VectorCopy( omins, b->mins );
+		VectorCopy( omaxs, b->maxs );
+		if ( culled ) {
+			continue;
+		}
+
+		if ( b->patchBrush ) {
+			DrawPatchMesh( b->pPatch );
+			continue;
+		}
+		if ( b->owner->eclass->fixedsize ) {
+			continue;
+		}
+		for ( face_t *face = b->brush_faces; face; face = face->next )
+		{
+			winding_t *w = face->face_winding;
+			if ( !w ) {
+				continue;
+			}
+			qglBegin( GL_POLYGON );
+			for ( int i = 0; i < w->numpoints; i++ )
+				qglVertex3fv( w->points[i] );
+			qglEnd();
+		}
+	}
+	qglPopMatrix();
+
+	qglDepthFunc( depthFunc );
+	qglDisable( GL_BLEND );
+	qglEnable( GL_CULL_FACE );
+	qglPolygonMode( GL_FRONT, GL_LINE );
+	qglPolygonMode( GL_BACK, GL_FILL );
 }
 
 /*

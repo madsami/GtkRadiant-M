@@ -1821,9 +1821,184 @@ static gboolean ConePanelTick( gpointer data ){
 	return TRUE;
 }
 
+// Floating window for the mouse rotation (R): shows up by itself while the mode is on, with the pivot as three numbers (it
+// follows the pivot when that is moved in a grid view, and moves it when typed into) and the angles to turn the selection
+// by, in degrees. Apply turns the selection about the pivot: X, then Y, then Z, counter-clockwise looking down each axis
+// at the pivot for a positive angle. Enter in an angle box applies as well.
+static GtkWidget *g_rotPanel = NULL;
+static GtkWidget *g_rotPivot[3] = { NULL, NULL, NULL };
+static GtkWidget *g_rotDeg[3] = { NULL, NULL, NULL };
+static bool g_rotListen = false;
+static int g_rotX = -1, g_rotY = -1;
+
+static void OnRotPivotChanged( GtkWidget *widget, gpointer data ){
+	if ( !g_rotListen || !g_pParentWnd->ActiveXY() ) {
+		return;
+	}
+	vec3_t &p = g_pParentWnd->ActiveXY()->RotateOrigin();
+	for ( int i = 0; i < 3; i++ )
+		p[i] = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_rotPivot[i] ) );
+	Sys_UpdateWindows( W_XY | W_CAMERA );
+}
+
+static void OnRotApply( GtkWidget *widget, gpointer data ){
+	if ( !g_bRotateMode || !g_pParentWnd->ActiveXY() ) {
+		return;
+	}
+	for ( int i = 0; i < 3; i++ )
+		gtk_spin_button_update( GTK_SPIN_BUTTON( g_rotDeg[i] ) );
+	float deg[3];
+	bool any = false;
+	for ( int i = 0; i < 3; i++ )
+	{
+		deg[i] = (float)gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_rotDeg[i] ) );
+		if ( deg[i] != 0.0f ) {
+			any = true;
+		}
+	}
+	if ( !any || selected_brushes.next == &selected_brushes ) {
+		return;
+	}
+	Undo_Start( "rotate by angle" );
+	Undo_AddBrushList( &selected_brushes );
+	// Select_RotateAxis turns by the matrix of the grid views, where a positive angle about X and Z runs clockwise
+	const float sign[3] = { -1.0f, 1.0f, -1.0f };
+	for ( int axis = 0; axis < 3; axis++ )
+	{
+		if ( deg[axis] != 0.0f ) {
+			Select_RotateAxis( axis, sign[axis] * deg[axis], false, true );
+			g_pParentWnd->ActiveXY()->Rotation()[axis] += deg[axis];
+		}
+	}
+	Undo_EndBrushList( &selected_brushes );
+	Undo_End();
+	for ( int i = 0; i < 3; i++ )
+		gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_rotDeg[i] ), 0 );
+	Sys_UpdateWindows( W_ALL );
+}
+
+static void OnRotCentre( GtkWidget *widget, gpointer data ){
+	if ( !g_bRotateMode || !g_pParentWnd->ActiveXY() ) {
+		return;
+	}
+	Select_GetTrueMid( g_pParentWnd->ActiveXY()->RotateOrigin() );
+	Sys_UpdateWindows( W_XY | W_CAMERA );
+}
+
+static gboolean OnRotEnter( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	gtk_window_set_accept_focus( GTK_WINDOW( g_rotPanel ), TRUE );
+	return FALSE;
+}
+
+static gboolean OnRotLeave( GtkWidget *widget, GdkEventCrossing *event, gpointer data ){
+	if ( event->detail == GDK_NOTIFY_INFERIOR ) {
+		return FALSE;
+	}
+	if ( gtk_window_is_active( GTK_WINDOW( g_rotPanel ) ) ) {
+		gtk_window_present( GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	}
+	gtk_window_set_accept_focus( GTK_WINDOW( g_rotPanel ), FALSE );
+	return FALSE;
+}
+
+static void RotPanelBuild(){
+	g_rotPanel = gtk_window_new( GTK_WINDOW_TOPLEVEL );
+	gtk_window_set_title( GTK_WINDOW( g_rotPanel ), _( "Rotate" ) );
+	gtk_window_set_transient_for( GTK_WINDOW( g_rotPanel ), GTK_WINDOW( g_pParentWnd->m_pWidget ) );
+	gtk_window_set_type_hint( GTK_WINDOW( g_rotPanel ), GDK_WINDOW_TYPE_HINT_UTILITY );
+	gtk_window_set_skip_taskbar_hint( GTK_WINDOW( g_rotPanel ), TRUE );
+	gtk_window_set_focus_on_map( GTK_WINDOW( g_rotPanel ), FALSE );
+	gtk_window_set_accept_focus( GTK_WINDOW( g_rotPanel ), FALSE );
+	gtk_window_set_resizable( GTK_WINDOW( g_rotPanel ), FALSE );
+	gtk_window_set_deletable( GTK_WINDOW( g_rotPanel ), FALSE );
+
+	GtkWidget *table = gtk_table_new( 3, 5, FALSE );
+	gtk_table_set_row_spacings( GTK_TABLE( table ), 4 );
+	gtk_table_set_col_spacings( GTK_TABLE( table ), 4 );
+	gtk_container_set_border_width( GTK_CONTAINER( table ), 6 );
+	gtk_container_add( GTK_CONTAINER( g_rotPanel ), table );
+	gtk_widget_show( table );
+
+	GtkWidget *l = gtk_label_new( _( "Pivot" ) );
+	gtk_misc_set_alignment( GTK_MISC( l ), 0.0, 0.5 );
+	gtk_table_attach( GTK_TABLE( table ), l, 0, 1, 0, 1, GTK_FILL, GTK_FILL, 0, 0 );
+	gtk_widget_show( l );
+	l = gtk_label_new( _( "Turn by (deg)" ) );
+	gtk_misc_set_alignment( GTK_MISC( l ), 0.0, 0.5 );
+	gtk_table_attach( GTK_TABLE( table ), l, 0, 1, 1, 2, GTK_FILL, GTK_FILL, 0, 0 );
+	gtk_widget_show( l );
+
+	const char *axisName[3] = { "X", "Y", "Z" };
+	for ( int i = 0; i < 3; i++ )
+	{
+		g_rotPivot[i] = gtk_spin_button_new( GTK_ADJUSTMENT( gtk_adjustment_new( 0, -65536, 65536, 1, 8, 0 ) ), 1, 2 );
+		gtk_entry_set_width_chars( GTK_ENTRY( g_rotPivot[i] ), 9 );
+		gtk_widget_set_tooltip_text( g_rotPivot[i], _( "The pivot of the rotation, the same point the pink marker shows. Moving it with Shift + middle mouse button in a grid view updates these; typing here moves the marker" ) );
+		gtk_table_attach( GTK_TABLE( table ), g_rotPivot[i], i + 1, i + 2, 0, 1, GTK_FILL, GTK_FILL, 0, 0 );
+		gtk_widget_show( g_rotPivot[i] );
+		g_signal_connect( G_OBJECT( g_rotPivot[i] ), "value-changed", G_CALLBACK( OnRotPivotChanged ), NULL );
+
+		g_rotDeg[i] = gtk_spin_button_new( GTK_ADJUSTMENT( gtk_adjustment_new( 0, -360, 360, 1, 15, 0 ) ), 1, 2 );
+		gtk_entry_set_width_chars( GTK_ENTRY( g_rotDeg[i] ), 9 );
+		gtk_widget_set_tooltip_text( g_rotDeg[i], _( "Degrees to turn the selection about the pivot, around the world axis named in the column. Positive turns counter-clockwise looking down the axis at the pivot. Enter applies" ) );
+		gtk_table_attach( GTK_TABLE( table ), g_rotDeg[i], i + 1, i + 2, 1, 2, GTK_FILL, GTK_FILL, 0, 0 );
+		gtk_widget_show( g_rotDeg[i] );
+		g_signal_connect( G_OBJECT( g_rotDeg[i] ), "activate", G_CALLBACK( OnRotApply ), NULL );
+
+		l = gtk_label_new( axisName[i] );
+		gtk_table_attach( GTK_TABLE( table ), l, i + 1, i + 2, 2, 3, GTK_FILL, GTK_FILL, 0, 0 );
+		gtk_widget_show( l );
+	}
+	GtkWidget *b = gtk_button_new_with_label( _( "Apply" ) );
+	gtk_widget_set_tooltip_text( b, _( "Turn the selection by the angles, about the X, then the Y, then the Z axis through the pivot" ) );
+	gtk_table_attach( GTK_TABLE( table ), b, 4, 5, 1, 2, GTK_FILL, GTK_FILL, 0, 0 );
+	gtk_widget_show( b );
+	g_signal_connect( G_OBJECT( b ), "clicked", G_CALLBACK( OnRotApply ), NULL );
+	b = gtk_button_new_with_label( _( "Centre" ) );
+	gtk_widget_set_tooltip_text( b, _( "Put the pivot back in the middle of the selection" ) );
+	gtk_table_attach( GTK_TABLE( table ), b, 4, 5, 0, 1, GTK_FILL, GTK_FILL, 0, 0 );
+	gtk_widget_show( b );
+	g_signal_connect( G_OBJECT( b ), "clicked", G_CALLBACK( OnRotCentre ), NULL );
+
+	gtk_widget_add_events( g_rotPanel, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK );
+	g_signal_connect( G_OBJECT( g_rotPanel ), "enter-notify-event", G_CALLBACK( OnRotEnter ), NULL );
+	g_signal_connect( G_OBJECT( g_rotPanel ), "leave-notify-event", G_CALLBACK( OnRotLeave ), NULL );
+}
+
+static gboolean RotPanelTick( gpointer data ){
+	if ( g_pParentWnd == NULL || g_pParentWnd->m_pWidget == NULL || g_pParentWnd->ActiveXY() == NULL ) {
+		return TRUE;
+	}
+	const bool on = g_bRotateMode;
+	if ( on && g_rotPanel == NULL ) {
+		RotPanelBuild();
+	}
+	if ( g_rotPanel == NULL ) {
+		return TRUE;
+	}
+	if ( on ) {
+		// follow the pivot, unless a box of the pivot is being typed into
+		const vec3_t &p = g_pParentWnd->ActiveXY()->RotateOrigin();
+		g_rotListen = false;
+		for ( int i = 0; i < 3; i++ )
+			if ( !gtk_widget_has_focus( g_rotPivot[i] ) && fabs( gtk_spin_button_get_value( GTK_SPIN_BUTTON( g_rotPivot[i] ) ) - p[i] ) > 0.001 ) {
+				gtk_spin_button_set_value( GTK_SPIN_BUTTON( g_rotPivot[i] ), p[i] );
+			}
+		g_rotListen = true;
+		if ( !gtk_widget_get_visible( g_rotPanel ) ) {
+			PanelStack_Show( g_rotPanel, &g_rotX, &g_rotY );
+		}
+	}
+	else if ( gtk_widget_get_visible( g_rotPanel ) ) {
+		PanelStack_Hide( g_rotPanel, &g_rotX, &g_rotY );
+	}
+	return TRUE;
+}
+
 void SegPanel_Init(){
 	g_timeout_add( 150, SegPanelTick, NULL );
 	g_timeout_add( 150, BevelPanelTick, NULL );
 	g_timeout_add( 150, CogPanelTick, NULL );
 	g_timeout_add( 150, ConePanelTick, NULL );
+	g_timeout_add( 150, RotPanelTick, NULL );
 }

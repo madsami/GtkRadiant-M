@@ -29,6 +29,7 @@
 #include "mainframe.h"
 #include "gtkmisc.h"
 #include "filters.h"
+#include "straight.h"
 
 extern MainFrame* g_pParentWnd;
 
@@ -153,6 +154,7 @@ entity_t *Map_FindClass( const char *cname ){
    ================
  */
 void Map_Free( void ){
+	Straight_Reset(); // Straight Edit cannot outlive the map
 	g_bRestoreBetween = false;
 	if ( selected_brushes.next &&
 		 ( selected_brushes.next != &selected_brushes ) ) {
@@ -770,7 +772,18 @@ const char* filename_get_extension( const char* filename ){
    \todo FIXME remove the use_region, this is broken .. work with a global flag to set region mode or not
    ===========
  */
+static void Map_SaveFile_Real( const char *filename, qboolean use_region );
+
 void Map_SaveFile( const char *filename, qboolean use_region ){
+	// Straight Edit: the file is written with everything where it really is, then the mode comes back
+	const bool bStraight = Straight_Suspend();
+	Map_SaveFile_Real( filename, use_region );
+	if ( bStraight ) {
+		Straight_Resume();
+	}
+}
+
+static void Map_SaveFile_Real( const char *filename, qboolean use_region ){
 	clock_t start, finish;
 	double elapsed_time;
 	start = clock();

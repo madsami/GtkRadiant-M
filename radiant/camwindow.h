@@ -117,6 +117,7 @@ qboolean CullBrush( brush_t *b );
 void Cam_Draw();
 void Cam_DrawStuff();
 void Cam_DrawWireOverlay();
+void Cam_DrawGhosts();
 
 // Anti-aliasing: the scene is rendered into a multisampled offscreen buffer and resolved into the window,
 // which keeps the window itself on a plain pixel format (a multisampled window format came out gamma-shifted).

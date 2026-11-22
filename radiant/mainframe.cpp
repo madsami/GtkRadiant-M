@@ -29,6 +29,7 @@
 #include "segpatch.h"
 #include "cog.h"
 #include "patchgroup.h"
+#include "straight.h"
 #include "seatcut.h"
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
@@ -140,6 +141,7 @@ SCommandInfo g_Commands[] =
 	{"ThickenPatch", GDK_KEY_T, 0x04, ID_CURVE_THICKEN, "menu_curve_thicken"},
 	{"SelectWholeCog", GDK_KEY_A, 0x05, ID_CURVE_COGSELECT, "menu_curve_cogselect"},
 	{"MergeSelection", GDK_KEY_G, 0x05, ID_CURVE_GROUPMERGE, "menu_curve_groupmerge"},
+	{"StraightEdit", GDK_KEY_X, 0x05, ID_CURVE_STRAIGHTEDIT, "menu_curve_straightedit"},
 	{"MakeOverlayPatch", GDK_KEY_Y, 0, ID_CURVE_OVERLAY_SET, "menu_curve_overlay_set"},
 	{"ClearPatchOverlays", GDK_KEY_L, 0x04, ID_CURVE_OVERLAY_CLEAR, "menu_curve_overlay_clear"},
 	{"SurfaceInspector", GDK_KEY_S, 0, ID_TEXTURES_INSPECTOR, "menu_textures_inspector"},
@@ -652,6 +654,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_GROUPMERGE: g_pParentWnd->OnCurveGroupMerge(); break;
 		  case ID_CURVE_GROUPSPLIT: g_pParentWnd->OnCurveGroupSplit(); break;
 		  case ID_CURVE_GROUPSELECT: g_pParentWnd->OnCurveGroupSelect(); break;
+		  case ID_CURVE_STRAIGHTEDIT: g_pParentWnd->OnCurveStraightEdit(); break;
 		  case ID_CURVE_SEGCAP: g_pParentWnd->OnCurveSegcap(); break;
 		  case ID_CURVE_SEGCAPTOP: g_pParentWnd->OnCurveSegcaptop(); break;
 		  case ID_CURVE_SEGCAPBOT: g_pParentWnd->OnCurveSegcapbot(); break;
@@ -1656,6 +1659,7 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Merge Selection (Group)" ), G_CALLBACK( HandleCommand ), ID_CURVE_GROUPMERGE );
 		create_menu_item_with_mnemonic( menu, _( "Split Group" ), G_CALLBACK( HandleCommand ), ID_CURVE_GROUPSPLIT );
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Group" ), G_CALLBACK( HandleCommand ), ID_CURVE_GROUPSELECT );
+		create_menu_item_with_mnemonic( menu, _( "Straight Edit (rotated object)" ), G_CALLBACK( HandleCommand ), ID_CURVE_STRAIGHTEDIT );
 		menu_separator( menu );
 		create_menu_item_with_mnemonic( menu, _( "End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHENDCAP );
 		create_menu_item_with_mnemonic( menu, _( "Improved End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDENDCAP );
@@ -5641,6 +5645,10 @@ void MainFrame::OnSelectionDeselect(){
 		OnViewClipper();
 	}
 	else
+	if ( Straight_Active() ) {
+		Straight_Toggle(); // Esc leaves Straight Edit
+	}
+	else
 	if ( g_bRotateMode ) {
 		OnSelectMouserotate();
 	}
@@ -6905,6 +6913,10 @@ void MainFrame::OnCurveGroupSplit(){
 
 void MainFrame::OnCurveGroupSelect(){
 	PatchGroup_SelectWhole( true );
+}
+
+void MainFrame::OnCurveStraightEdit(){
+	Straight_Toggle();
 }
 
 void MainFrame::OnCurveSegtoggle(){

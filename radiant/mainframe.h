@@ -196,6 +196,7 @@ struct SKeyInfo
 #define ID_CURVE_GROUPMERGE             40360
 #define ID_CURVE_GROUPSPLIT             40361
 #define ID_CURVE_GROUPSELECT            40362
+#define ID_CURVE_STRAIGHTEDIT           40363
 #define ID_CURVE_SEATCUT                40348
 #define ID_CURVE_SEATCLEAR              40349
 #define ID_CURVE_SEATSELECT             40350
@@ -849,6 +850,7 @@ void OnCurveCogSelect();
 void OnCurveGroupMerge();
 void OnCurveGroupSplit();
 void OnCurveGroupSelect();
+void OnCurveStraightEdit();
 void OnCurveSegcap();
 void OnCurveSegcaptop();
 void OnCurveSegcapbot();

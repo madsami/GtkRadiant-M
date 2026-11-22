@@ -10,6 +10,7 @@
 #include <string.h>
 #include "segpatch.h"
 #include "seatcut.h"
+#include "straight.h"
 
 #ifdef min
 #undef min
@@ -487,6 +488,9 @@ static bool g_seatPending = false;
 // Every 100 ms. When something that matters has changed, the holes are worked out again once it has been
 // left alone for three ticks (0.3 s), so dragging a cutter around does not redo them at every step.
 static gboolean Seat_Tick( gpointer ){
+	if ( Straight_Active() ) {
+		return TRUE; // the cutters are in their straight pose: the holes are worked out again on leaving
+	}
 	bool any;
 	unsigned long long h = Seat_StateHash( &any );
 	if ( !any ) {
@@ -629,6 +633,9 @@ bool Seat_ClearSelected(){
 }
 
 int Seat_SelectWhole(){
+	if ( Straight_Active() ) {
+		return 0; // the rest of the map is out of reach while Straight Edit is on
+	}
 	std::vector<int> ids;
 	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
 		if ( b->patchBrush && b->pPatch && b->pPatch->seatId > 0 && std::find( ids.begin(), ids.end(), b->pPatch->seatId ) == ids.end() ) {

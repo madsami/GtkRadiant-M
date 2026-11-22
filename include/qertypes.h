@@ -506,6 +506,9 @@ typedef struct brush_s
 	bool bFiltered;
 	bool bCamCulled;
 	bool bBrushDef;
+	// Straight Edit (straight.h): part of the map that is only shown, turned and grayed out. Last, so that plugins built
+	// against an older header still see every other field where it was.
+	bool ghost;
 } brush_t;
 
 #define MAX_FLAGS   16

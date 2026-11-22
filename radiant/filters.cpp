@@ -204,8 +204,8 @@ bool FilterBrush( brush_t *pb ){
 		return FALSE;       // during construction
 
 	}
-	if ( pb->hiddenBrush ) {
-		return TRUE;
+	if ( pb->hiddenBrush || pb->ghost ) {
+		return TRUE; // a ghost of Straight Edit is out of reach like a hidden brush
 	}
 
 	if ( g_qeglobals.d_savedinfo.exclude & EXCLUDE_WORLD ) {

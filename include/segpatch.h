@@ -24,6 +24,8 @@
 #include <math.h>
 #include <vector>
 #include <algorithm>
+#include <map>
+#include <set>
 #include <utility>
 
 #define SEGPATCH_MIN_H          3
@@ -348,7 +350,7 @@ struct segVert_t
 {
 	float xyz[3];
 	float st[2];
-	float cu, cv;       // where in its cell the vertex is (0..1 along the width / height), for the normals
+	float cu, cv;       // where on the grid the vertex is (cell index + 0..1 along the width / height), for the normals
 };
 typedef std::vector<segVert_t> segPoly_t;
 
@@ -537,6 +539,108 @@ inline float SegPatch_Turn( const float *a, const float *b, const float *c, cons
 	return x[0] * N[0] + x[1] * N[1] + x[2] * N[2];
 }
 
+// Ties between equally good choices are decided by where the thing is (height first, then the distance from the
+// vertical axis through the origin), not by the order of the vertices: a polygon and its mirror image then choose
+// alike, which a symmetric cut needs.
+inline bool SegPatch_KeyLess( const float *a, const float *b ){
+	if ( fabsf( a[2] - b[2] ) > 1e-2f ) {
+		return a[2] < b[2];
+	}
+	const float ra = a[0] * a[0] + a[1] * a[1], rb = b[0] * b[0] + b[1] * b[1];
+	return ra < rb - 1e-2f;
+}
+
+// Pairs of triangles (indices into poly, three each, wound along N) that make a convex quad become one piece
+// (fewer patches, the same surface); the best shaped quads first. What is left over stays as triangles.
+inline void SegPatch_MergeTris( const segPoly_t &poly, const std::vector<int> &tris, const float *N, std::vector<segPoly_t> &out ){
+	// pairs of triangles that make a convex quad become one piece (fewer patches, the same surface); the
+	// best shaped quads first
+	const int nt = (int)tris.size() / 3;
+	struct Cand
+	{
+		float score;
+		int i, j, q[4];
+		float key[3];
+	};
+	std::vector<Cand> cands;
+	for ( int i = 0; i < nt; i++ )
+	{
+		for ( int j = i + 1; j < nt; j++ )
+		{
+			for ( int e = 0; e < 3; e++ )
+			{
+				const int u = tris[i * 3 + e], v = tris[i * 3 + ( e + 1 ) % 3], w = tris[i * 3 + ( e + 2 ) % 3];
+				for ( int f = 0; f < 3; f++ )
+				{
+					if ( tris[j * 3 + f] != v || tris[j * 3 + ( f + 1 ) % 3] != u ) {
+						continue;
+					}
+					const int x = tris[j * 3 + ( f + 2 ) % 3];
+					Cand c;
+					c.i = i;
+					c.j = j;
+					c.q[0] = w;
+					c.q[1] = u;
+					c.q[2] = x;
+					c.q[3] = v;
+					float worst = 1e9f;
+					for ( int k = 0; k < 4; k++ )
+					{
+						const float *a = poly[c.q[( k + 3 ) % 4]].xyz, *b = poly[c.q[k]].xyz, *d = poly[c.q[( k + 1 ) % 4]].xyz;
+						float la = 0, lb = 0;
+						for ( int m = 0; m < 3; m++ )
+						{
+							la += ( b[m] - a[m] ) * ( b[m] - a[m] );
+							lb += ( d[m] - b[m] ) * ( d[m] - b[m] );
+						}
+						float s = SegPatch_Turn( a, b, d, N ) / ( sqrtf( la * lb ) + 1e-9f ); // sine of the corner
+						if ( s < worst ) {
+							worst = s;
+						}
+					}
+					if ( worst > 0.05f ) {
+						c.score = worst;
+						for ( int a = 0; a < 3; a++ )
+							c.key[a] = 0.25f * ( poly[c.q[0]].xyz[a] + poly[c.q[1]].xyz[a] + poly[c.q[2]].xyz[a] + poly[c.q[3]].xyz[a] );
+						cands.push_back( c );
+					}
+				}
+			}
+		}
+	}
+	std::vector<char> used( nt, 0 );
+	for ( size_t n = 0; n < cands.size(); n++ )
+	{
+		size_t best = cands.size();
+		for ( size_t m = 0; m < cands.size(); m++ )
+			if ( !used[cands[m].i] && !used[cands[m].j] ) {
+				if ( best == cands.size() || cands[m].score > cands[best].score + 1e-6f ||
+					 ( cands[m].score > cands[best].score - 1e-6f && SegPatch_KeyLess( cands[best].key, cands[m].key ) ) ) {
+					best = m;
+				}
+			}
+		if ( best == cands.size() ) {
+			break;
+		}
+		const Cand &c = cands[best];
+		used[c.i] = used[c.j] = 1;
+		segPoly_t q;
+		for ( int k = 0; k < 4; k++ )
+			q.push_back( poly[c.q[k]] );
+		out.push_back( q );
+	}
+	for ( int i = 0; i < nt; i++ )
+	{
+		if ( used[i] ) {
+			continue;
+		}
+		segPoly_t t;
+		for ( int k = 0; k < 3; k++ )
+			t.push_back( poly[tris[i * 3 + k]] );
+		out.push_back( t );
+	}
+}
+
 // A simple polygon as the fewest triangles (a convex quad stays one piece). Among the ears that can be cut off the
 // one with the best shaped triangle goes first, so the result follows the shape and not the order of the vertices.
 inline void SegPatch_EmitPoly( const segPoly_t &in, std::vector<segPoly_t> &out ){
@@ -607,7 +711,7 @@ inline void SegPatch_EmitPoly( const segPoly_t &in, std::vector<segPoly_t> &out 
 				lc += ( a[k] - c[k] ) * ( a[k] - c[k] );
 			}
 			float q = 2.0f * turn / ( la + lb + lc + 1e-9f ); // 4 sqrt(3) area / sum of squares, up to a constant
-			if ( q > bestQ + 1e-6f ) {
+			if ( q > bestQ + 1e-6f || ( bestI >= 0 && q > bestQ - 1e-6f && SegPatch_KeyLess( poly[idx[bestI]].xyz, b ) ) ) {
 				bestQ = q;
 				bestI = i;
 			}
@@ -633,86 +737,7 @@ inline void SegPatch_EmitPoly( const segPoly_t &in, std::vector<segPoly_t> &out 
 		tris.push_back( idx[2] );
 	}
 
-	// pairs of triangles that make a convex quad become one piece (fewer patches, the same surface); the
-	// best shaped quads first
-	const int nt = (int)tris.size() / 3;
-	struct Cand
-	{
-		float score;
-		int i, j, q[4];
-	};
-	std::vector<Cand> cands;
-	for ( int i = 0; i < nt; i++ )
-	{
-		for ( int j = i + 1; j < nt; j++ )
-		{
-			for ( int e = 0; e < 3; e++ )
-			{
-				const int u = tris[i * 3 + e], v = tris[i * 3 + ( e + 1 ) % 3], w = tris[i * 3 + ( e + 2 ) % 3];
-				for ( int f = 0; f < 3; f++ )
-				{
-					if ( tris[j * 3 + f] != v || tris[j * 3 + ( f + 1 ) % 3] != u ) {
-						continue;
-					}
-					const int x = tris[j * 3 + ( f + 2 ) % 3];
-					Cand c;
-					c.i = i;
-					c.j = j;
-					c.q[0] = w;
-					c.q[1] = u;
-					c.q[2] = x;
-					c.q[3] = v;
-					float worst = 1e9f;
-					for ( int k = 0; k < 4; k++ )
-					{
-						const float *a = poly[c.q[( k + 3 ) % 4]].xyz, *b = poly[c.q[k]].xyz, *d = poly[c.q[( k + 1 ) % 4]].xyz;
-						float la = 0, lb = 0;
-						for ( int m = 0; m < 3; m++ )
-						{
-							la += ( b[m] - a[m] ) * ( b[m] - a[m] );
-							lb += ( d[m] - b[m] ) * ( d[m] - b[m] );
-						}
-						float s = SegPatch_Turn( a, b, d, N ) / ( sqrtf( la * lb ) + 1e-9f ); // sine of the corner
-						if ( s < worst ) {
-							worst = s;
-						}
-					}
-					if ( worst > 0.05f ) {
-						c.score = worst;
-						cands.push_back( c );
-					}
-				}
-			}
-		}
-	}
-	std::vector<char> used( nt, 0 );
-	for ( size_t n = 0; n < cands.size(); n++ )
-	{
-		size_t best = cands.size();
-		for ( size_t m = 0; m < cands.size(); m++ )
-			if ( !used[cands[m].i] && !used[cands[m].j] && ( best == cands.size() || cands[m].score > cands[best].score + 1e-6f ) ) {
-				best = m;
-			}
-		if ( best == cands.size() ) {
-			break;
-		}
-		const Cand &c = cands[best];
-		used[c.i] = used[c.j] = 1;
-		segPoly_t q;
-		for ( int k = 0; k < 4; k++ )
-			q.push_back( poly[c.q[k]] );
-		out.push_back( q );
-	}
-	for ( int i = 0; i < nt; i++ )
-	{
-		if ( used[i] ) {
-			continue;
-		}
-		segPoly_t t;
-		for ( int k = 0; k < 3; k++ )
-			t.push_back( poly[tris[i * 3 + k]] );
-		out.push_back( t );
-	}
+	SegPatch_MergeTris( poly, tris, N, out );
 }
 
 // The points of a run of hull corners that have to stay: the ones further than tol from the straight line between
@@ -767,7 +792,7 @@ inline void SegPatch_SimplifyRun( const segPoly_t &run, float tol, std::vector<c
 // all inside, 2 if what is left of it was added to out (triangles and convex quads). The part inside is the
 // polygon cut by every plane, which does not depend on their order; what is left is read off the outline of that
 // part and of the polygon, so both sides of a symmetric cut come out alike.
-inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::vector<segPoly_t> &out ){
+inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::vector<segPoly_t> &out, std::vector<segPoly_t> *rawOut = 0 ){
 	segPoly_t K = A;
 	for ( int k = 0; k < h.n && K.size() >= 3; k++ )
 	{
@@ -874,6 +899,10 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 		}
 	}
 	if ( ok && chains > 0 ) {
+		if ( rawOut ) {
+			*rawOut = kept; // exact, for the regions to be put together
+			return 2;
+		}
 		for ( size_t i = 0; i < simple.size(); i++ )
 			SegPatch_EmitPoly( simple[i], out );
 		return 2;
@@ -881,6 +910,428 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 	// the hull is inside the polygon without touching its outline, or something odd: plane by plane
 	SegPatch_ClipOutsideHull( A, h, out );
 	return 2;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The cut zone as regions. Cutting every cell on its own leaves a vertex wherever the hole crosses the outline of
+// a cell, in the middle of a face of the cutter, off the wireframe. So those vertices are left out: the hole then
+// runs in straight lines from one wireframe edge of the cutter to the next, in the faces of the cutter. What the
+// pieces of the cells lose that way (the corner next to such a vertex) is made up by one polygon for every such
+// straight stretch: the stretch itself and the corners of the cells that its vertices hung from.
+
+struct segRaw_t
+{
+	segPoly_t poly;     // exact piece of one cell outside the hull
+	int cu, cv;         // its cell
+};
+
+inline int SegPatch_OnPlanes( const seatHull_t &h, const float *x ){
+	int n = 0;
+	for ( int k = 0; k < h.n; k++ )
+		if ( fabsf( SegPatch_PlaneDist( h.pl[k], x ) ) < 0.05f ) {
+			n++;
+		}
+	return n;
+}
+
+inline bool SegPatch_SharePlane( const seatHull_t &h, const float *a, const float *b ){
+	for ( int k = 0; k < h.n; k++ )
+		if ( fabsf( SegPatch_PlaneDist( h.pl[k], a ) ) < 0.05f && fabsf( SegPatch_PlaneDist( h.pl[k], b ) ) < 0.05f ) {
+			return true;
+		}
+	return false;
+}
+
+inline bool SegPatch_SamePoint( const float *a, const float *b ){
+	return fabsf( a[0] - b[0] ) + fabsf( a[1] - b[1] ) + fabsf( a[2] - b[2] ) < 1e-3f;
+}
+
+// largest minus smallest of three numbers (min and max are macros in the editor)
+inline float SegPatch_Spread3( float a, float b, float c ){
+	float lo = a, hi = a;
+	if ( b < lo ) lo = b;
+	if ( b > hi ) hi = b;
+	if ( c < lo ) lo = c;
+	if ( c > hi ) hi = c;
+	return hi - lo;
+}
+
+// Ear clipping. The triangles come out as indices into P, wound like P. The best shaped ears go first, and as long
+// as there is a choice none may reach over more than two cells of the grid.
+inline bool SegPatch_EarClip( const segPoly_t &P, const float *N, std::vector<int> &tris ){
+	std::vector<int> idx( P.size() );
+	for ( size_t i = 0; i < idx.size(); i++ )
+		idx[i] = (int)i;
+	while ( idx.size() > 3 )
+	{
+		const int n = (int)idx.size();
+		int bestI = -1;
+		for ( int pass = 0; pass < 3 && bestI < 0; pass++ )
+		{
+			float bestQ = -1e9f;
+			for ( int i = 0; i < n; i++ )
+			{
+				const segVert_t &A = P[idx[( i + n - 1 ) % n]], &B = P[idx[i]], &C = P[idx[( i + 1 ) % n]];
+				const float turn = SegPatch_Turn( A.xyz, B.xyz, C.xyz, N );
+				if ( pass < 2 ? turn <= 1e-4f : turn < -1e-4f ) {
+					continue;
+				}
+				bool clear = true;
+				for ( int j = 0; j < n && clear; j++ )
+				{
+					if ( j == i || j == ( i + n - 1 ) % n || j == ( i + 1 ) % n ) {
+						continue;
+					}
+					const float *x = P[idx[j]].xyz;
+					if ( SegPatch_SamePoint( x, A.xyz ) || SegPatch_SamePoint( x, B.xyz ) || SegPatch_SamePoint( x, C.xyz ) ) {
+						continue;
+					}
+					if ( SegPatch_Turn( A.xyz, B.xyz, x, N ) > -1e-4f && SegPatch_Turn( B.xyz, C.xyz, x, N ) > -1e-4f && SegPatch_Turn( C.xyz, A.xyz, x, N ) > -1e-4f ) {
+						clear = false;
+					}
+				}
+				if ( !clear ) {
+					continue;
+				}
+				if ( pass == 0 && ( SegPatch_Spread3( A.cu, B.cu, C.cu ) > 2.01f || SegPatch_Spread3( A.cv, B.cv, C.cv ) > 2.01f ) ) {
+					continue;
+				}
+				float la = 0, lb = 0, lc = 0;
+				for ( int k = 0; k < 3; k++ )
+				{
+					la += ( B.xyz[k] - A.xyz[k] ) * ( B.xyz[k] - A.xyz[k] );
+					lb += ( C.xyz[k] - B.xyz[k] ) * ( C.xyz[k] - B.xyz[k] );
+					lc += ( A.xyz[k] - C.xyz[k] ) * ( A.xyz[k] - C.xyz[k] );
+				}
+				const float q = 2.0f * turn / ( la + lb + lc + 1e-9f );
+				if ( q > bestQ + 1e-6f || ( bestI >= 0 && q > bestQ - 1e-6f && SegPatch_KeyLess( P[idx[bestI]].xyz, B.xyz ) ) ) {
+					bestQ = q;
+					bestI = i;
+				}
+			}
+		}
+		if ( bestI < 0 ) {
+			return false;
+		}
+		tris.push_back( idx[( bestI + n - 1 ) % n] );
+		tris.push_back( idx[bestI] );
+		tris.push_back( idx[( bestI + 1 ) % n] );
+		idx.erase( idx.begin() + bestI );
+	}
+	tris.push_back( idx[0] );
+	tris.push_back( idx[1] );
+	tris.push_back( idx[2] );
+	return true;
+}
+
+// area of a polygon seen along N (negative if it is wound the other way)
+inline float SegPatch_LoopArea( const segPoly_t &L, const float *N ){
+	float s[3];
+	SegPatch_PolyNormal( L, s );
+	return 0.5f * ( s[0] * N[0] + s[1] * N[1] + s[2] * N[2] );
+}
+
+// a polygon as triangles and convex quads; a long one without letting the triangles reach over many cells
+inline void SegPatch_EmitSpan( const segPoly_t &in, const float *N, std::vector<segPoly_t> &out ){
+	segPoly_t poly = in;
+	SegPatch_Tidy( poly );
+	if ( poly.size() < 3 || SegPatch_PolyArea( poly ) < 1e-3f ) {
+		return;
+	}
+	if ( poly.size() <= 4 ) {
+		SegPatch_EmitPoly( poly, out );
+		return;
+	}
+	std::vector<int> tris;
+	if ( !SegPatch_EarClip( poly, N, tris ) ) {
+		SegPatch_EmitPoly( poly, out );
+		return;
+	}
+	SegPatch_MergeTris( poly, tris, N, out );
+}
+
+// the pieces of the cells that the hull cuts, with the hole straightened (see above)
+inline void SegPatch_MergeRegions( const std::vector<segRaw_t> &raws, const seatHull_t &h, std::vector<segFrag_t> &frags ){
+	const int nr = (int)raws.size();
+	if ( nr == 0 ) {
+		return;
+	}
+	std::vector<segVert_t> vt;
+	std::vector<std::vector<int> > ids( nr );
+	for ( int r = 0; r < nr; r++ )
+	{
+		for ( size_t i = 0; i < raws[r].poly.size(); i++ )
+		{
+			const float *x = raws[r].poly[i].xyz;
+			int id = -1;
+			for ( size_t k = 0; k < vt.size() && id < 0; k++ )
+				if ( fabsf( vt[k].xyz[0] - x[0] ) + fabsf( vt[k].xyz[1] - x[1] ) + fabsf( vt[k].xyz[2] - x[2] ) < 0.01f ) {
+					id = (int)k;
+				}
+			if ( id < 0 ) {
+				id = (int)vt.size();
+				vt.push_back( raws[r].poly[i] );
+			}
+			ids[r].push_back( id );
+		}
+	}
+	std::vector<int> onPl( vt.size() );
+	for ( size_t k = 0; k < vt.size(); k++ )
+		onPl[k] = SegPatch_OnPlanes( h, vt[k].xyz );
+
+	// the edges of all pieces; an edge of the hole's side that two pieces have in common (the visible part of the
+	// outline of a cell that the hole crosses) is no edge of the whole
+	struct E
+	{
+		int a, b, poly;
+		bool gone;
+	};
+	std::vector<E> es;
+	std::map<std::pair<int, int>, int> emap;
+	for ( int r = 0; r < nr; r++ )
+	{
+		const int n = (int)ids[r].size();
+		for ( int i = 0; i < n; i++ )
+		{
+			E e = { ids[r][i], ids[r][( i + 1 ) % n], r, false };
+			if ( e.a == e.b ) {
+				continue;
+			}
+			emap[std::make_pair( e.a, e.b )] = (int)es.size();
+			es.push_back( e );
+		}
+	}
+	for ( size_t ei = 0; ei < es.size(); ei++ )
+	{
+		if ( es[ei].gone ) {
+			continue;
+		}
+		std::map<std::pair<int, int>, int>::iterator it = emap.find( std::make_pair( es[ei].b, es[ei].a ) );
+		if ( it == emap.end() || es[it->second].gone || es[it->second].poly == es[ei].poly ) {
+			continue;
+		}
+		if ( onPl[es[ei].a] == 0 && onPl[es[ei].b] == 0 ) {
+			continue; // an edge of cells that the hole does not reach
+		}
+		es[ei].gone = es[it->second].gone = true;
+	}
+
+	// the outline of all pieces together
+	std::map<int, int> outOf, inDeg;
+	bool ok = true;
+	for ( size_t ei = 0; ei < es.size() && ok; ei++ )
+	{
+		if ( es[ei].gone ) {
+			continue;
+		}
+		if ( outOf.count( es[ei].a ) ) {
+			ok = false; // the outline touches itself
+		}
+		outOf[es[ei].a] = es[ei].b;
+		inDeg[es[ei].b]++;
+	}
+	for ( std::map<int, int>::iterator it = outOf.begin(); ok && it != outOf.end(); ++it )
+		if ( inDeg[it->first] != 1 ) {
+			ok = false;
+		}
+	if ( ok && outOf.size() != inDeg.size() ) {
+		ok = false;
+	}
+	float N[3] = { 0, 0, 0 };
+	for ( int r = 0; r < nr; r++ )
+	{
+		float q[3];
+		SegPatch_PolyNormal( raws[r].poly, q );
+		for ( int k = 0; k < 3; k++ )
+			N[k] += q[k];
+	}
+	const float nl = sqrtf( N[0] * N[0] + N[1] * N[1] + N[2] * N[2] );
+	if ( nl < 1e-9f ) {
+		ok = false;
+	}
+	for ( int k = 0; k < 3 && ok; k++ )
+		N[k] /= nl;
+
+	std::vector<std::vector<int> > loops;
+	if ( ok ) {
+		std::set<int> seen;
+		for ( std::map<int, int>::iterator it = outOf.begin(); ok && it != outOf.end(); ++it )
+		{
+			if ( seen.count( it->first ) ) {
+				continue;
+			}
+			std::vector<int> loop;
+			int v = it->first;
+			do
+			{
+				loop.push_back( v );
+				seen.insert( v );
+				v = outOf[v];
+			}
+			while ( v != it->first && loop.size() <= outOf.size() );
+			if ( v != it->first ) {
+				ok = false;
+			}
+			loops.push_back( loop );
+		}
+	}
+
+	// the vertices to leave out: in the middle of a face (both edges next to them run in one plane of the hull, and
+	// no wireframe line of the cutter passes through them), and the corner of the cells that they hang from
+	std::set<int> dropped;
+	std::map<int, int> corner;
+	std::vector<std::vector<int> > keptLoops;
+	for ( size_t l = 0; ok && l < loops.size(); l++ )
+	{
+		const int n = (int)loops[l].size();
+		std::vector<char> drop( n, 0 );
+		int nKept = 0;
+		for ( int i = 0; i < n; i++ )
+		{
+			const int c = loops[l][i];
+			const segVert_t &pv = vt[loops[l][( i + n - 1 ) % n]];
+			const segVert_t &nx = vt[loops[l][( i + 1 ) % n]];
+			drop[i] = onPl[c] == 1 && SegPatch_SharePlane( h, pv.xyz, vt[c].xyz ) && SegPatch_SharePlane( h, vt[c].xyz, nx.xyz );
+			if ( !drop[i] ) {
+				nKept++;
+			}
+		}
+		if ( nKept < 3 ) {
+			std::fill( drop.begin(), drop.end(), 0 ); // nothing to keep the shape: leave it as it is
+		}
+		for ( int i = 0; i < n && ok; i++ )
+		{
+			if ( !drop[i] ) {
+				continue;
+			}
+			const int c = loops[l][i];
+			int cor = -1;
+			for ( size_t ei = 0; ei < es.size(); ei++ )
+			{
+				if ( !es[ei].gone || ( es[ei].a != c && es[ei].b != c ) ) {
+					continue;
+				}
+				const int o = es[ei].a == c ? es[ei].b : es[ei].a;
+				if ( cor >= 0 && cor != o ) {
+					ok = false; // more than one outline of cells ends here
+				}
+				cor = o;
+			}
+			if ( cor < 0 ) {
+				ok = false;
+			}
+			dropped.insert( c );
+			corner[c] = cor;
+		}
+	}
+	std::vector<segPoly_t> gaps;
+	if ( ok ) {
+		// the stretches: from a vertex that stays over the ones left out to the next that stays
+		for ( size_t l = 0; l < loops.size() && ok; l++ )
+		{
+			const int n = (int)loops[l].size();
+			int start = -1;
+			for ( int i = 0; i < n && start < 0; i++ )
+				if ( !dropped.count( loops[l][i] ) ) {
+					start = i;
+				}
+			if ( start < 0 ) {
+				ok = false;
+				break;
+			}
+			int i = 0;
+			while ( i < n )
+			{
+				int j = i + 1;
+				std::vector<int> run;
+				while ( j <= n && dropped.count( loops[l][( start + j ) % n] ) )
+				{
+					run.push_back( loops[l][( start + j ) % n] );
+					j++;
+				}
+				if ( !run.empty() ) {
+					segPoly_t G;
+					G.push_back( vt[loops[l][( start + i ) % n]] );
+					G.push_back( vt[loops[l][( start + j ) % n]] );
+					for ( int k = (int)run.size() - 1; k >= 0; k-- )
+						G.push_back( vt[corner[run[k]]] );
+					gaps.push_back( G );
+				}
+				i = j;
+			}
+		}
+	}
+	// the pieces without the vertices that are left out
+	std::vector<segPoly_t> shrunk;
+	if ( ok ) {
+		for ( int r = 0; r < nr; r++ )
+		{
+			segPoly_t X;
+			for ( size_t i = 0; i < raws[r].poly.size(); i++ )
+				if ( !dropped.count( ids[r][i] ) ) {
+					X.push_back( raws[r].poly[i] );
+				}
+			SegPatch_Tidy( X );
+			shrunk.push_back( X );
+		}
+		// seen along N the pieces and the gaps must add up to the outline, and none may be wound the wrong way
+		float want = 0, sum = 0;
+		for ( size_t l = 0; l < loops.size(); l++ )
+		{
+			segPoly_t L;
+			for ( size_t i = 0; i < loops[l].size(); i++ )
+				if ( !dropped.count( loops[l][i] ) ) {
+					L.push_back( vt[loops[l][i]] );
+				}
+			want += SegPatch_LoopArea( L, N );
+		}
+		for ( size_t i = 0; i < shrunk.size() + gaps.size(); i++ )
+		{
+			segPoly_t X = i < shrunk.size() ? shrunk[i] : gaps[i - shrunk.size()];
+			SegPatch_Tidy( X );
+			if ( X.size() < 3 ) {
+				continue;
+			}
+			const float a = SegPatch_LoopArea( X, N );
+			if ( a < -0.05f ) {
+				ok = false;
+			}
+			sum += a;
+		}
+		if ( fabsf( sum - want ) > 0.01f * fabsf( want ) + 0.05f ) {
+			ok = false;
+		}
+	}
+	std::vector<segPoly_t> polys;
+	if ( ok ) {
+		for ( size_t i = 0; i < shrunk.size(); i++ )
+			SegPatch_EmitSpan( shrunk[i], N, polys );
+		for ( size_t i = 0; i < gaps.size(); i++ )
+			SegPatch_EmitSpan( gaps[i], N, polys );
+		for ( size_t i = 0; i < polys.size(); i++ )
+		{
+			segFrag_t f;
+			f.cu = raws[0].cu;
+			f.cv = raws[0].cv;
+			f.poly = polys[i];
+			frags.push_back( f );
+		}
+		return;
+	}
+	// not as expected: every piece as the hole cuts it
+	for ( int r = 0; r < nr; r++ )
+	{
+		std::vector<segPoly_t> own;
+		SegPatch_EmitPoly( raws[r].poly, own );
+		for ( size_t i = 0; i < own.size(); i++ )
+		{
+			segFrag_t f;
+			f.cu = raws[r].cu;
+			f.cv = raws[r].cv;
+			f.poly = own[i];
+			frags.push_back( f );
+		}
+	}
 }
 
 inline void SegPatch_Cut( const segGrid_t &g, const seatHull_t *hulls, int nHulls, segCut_t &r ){
@@ -894,6 +1345,7 @@ inline void SegPatch_Cut( const segGrid_t &g, const seatHull_t *hulls, int nHull
 	const float eps = 0.001f;
 	std::vector<char> keep( CU * CV, 0 ), used( CU * CV, 0 );
 	const float cuv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+	std::vector<std::vector<segRaw_t> > raws( nHulls > 0 ? nHulls : 1 );
 
 	for ( int u = 0; u < CU; u++ )
 	{
@@ -901,6 +1353,7 @@ inline void SegPatch_Cut( const segGrid_t &g, const seatHull_t *hulls, int nHull
 		{
 			const segPoint_t *c[4] = { &g.p[u * g.V + v], &g.p[( u + 1 ) * g.V + v], &g.p[( u + 1 ) * g.V + v + 1], &g.p[u * g.V + v + 1] };
 			bool apart = true, gone = false;
+			int touched = 0, touchedHull = -1;
 			for ( int h = 0; h < nHulls && !gone; h++ )
 			{
 				bool sep = false, inside = true;
@@ -926,6 +1379,8 @@ inline void SegPatch_Cut( const segGrid_t &g, const seatHull_t *hulls, int nHull
 					}
 				}
 				if ( !sep ) {
+					touched++;
+					touchedHull = h;
 					apart = false;
 					if ( inside && hulls[h].n > 0 ) {
 						gone = true;
@@ -948,8 +1403,38 @@ inline void SegPatch_Cut( const segGrid_t &g, const seatHull_t *hulls, int nHull
 					cell[q].xyz[k] = c[q]->xyz[k];
 				cell[q].st[0] = c[q]->st[0];
 				cell[q].st[1] = c[q]->st[1];
-				cell[q].cu = cuv[q][0];
-				cell[q].cv = cuv[q][1];
+				cell[q].cu = u + cuv[q][0];     // where on the grid (cell + fraction), for the normals
+				cell[q].cv = v + cuv[q][1];
+			}
+			if ( touched == 1 ) {
+				// one hull only: the pieces go to the regions
+				std::vector<segPoly_t> res, rw;
+				const int st = SegPatch_SubtractHull( cell, hulls[touchedHull], res, &rw );
+				if ( st == 0 ) {
+					keep[u * CV + v] = 1; // near the hull, but not in it
+					continue;
+				}
+				if ( st == 1 ) {
+					r.removed++;
+					continue;
+				}
+				for ( size_t i = 0; i < rw.size(); i++ )
+				{
+					segRaw_t rr;
+					rr.poly = rw[i];
+					rr.cu = u;
+					rr.cv = v;
+					raws[touchedHull].push_back( rr );
+				}
+				for ( size_t i = 0; i < res.size(); i++ )
+				{
+					segFrag_t f;
+					f.cu = u;
+					f.cv = v;
+					f.poly = res[i];
+					r.frags.push_back( f );
+				}
+				continue;
 			}
 			std::vector<segPoly_t> pieces( 1, cell );
 			bool changed = false;
@@ -989,6 +1474,9 @@ inline void SegPatch_Cut( const segGrid_t &g, const seatHull_t *hulls, int nHull
 			}
 		}
 	}
+
+	for ( int h = 0; h < nHulls; h++ )
+		SegPatch_MergeRegions( raws[h], hulls[h], r.frags );
 
 	// the cells that are kept, in as few rectangles as possible
 	for ( int v = 0; v < CV; v++ )

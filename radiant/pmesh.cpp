@@ -3707,8 +3707,6 @@ static bool Patch_DrawSegMesh( patchMesh_t *pm ){
 		for ( size_t f = 0; f < ct.frags.size(); f++ )
 		{
 			const segFrag_t &fr = ct.frags[f];
-			const segPoint_t *nn[4] = { &c->normals[fr.cu * V + fr.cv], &c->normals[( fr.cu + 1 ) * V + fr.cv],
-										&c->normals[( fr.cu + 1 ) * V + fr.cv + 1], &c->normals[fr.cu * V + fr.cv + 1] };
 			const size_t n = fr.poly.size();
 			for ( size_t i = 1; i + 1 < n; i++ )
 			{
@@ -3716,7 +3714,13 @@ static bool Patch_DrawSegMesh( patchMesh_t *pm ){
 				const segVert_t *tri[3] = { &fr.poly[0], &fr.poly[i + 1], &fr.poly[i] };
 				for ( int t = 0; t < 3; t++ )
 				{
-					const float s = tri[t]->cu, w = tri[t]->cv;
+					// the vertex knows where on the grid it is (cell + fraction): the normals of the corners of that cell
+					int cu = (int)floorf( tri[t]->cu ), cv = (int)floorf( tri[t]->cv );
+					cu = cu < 0 ? 0 : ( cu > U - 2 ? U - 2 : cu );
+					cv = cv < 0 ? 0 : ( cv > V - 2 ? V - 2 : cv );
+					const float s = tri[t]->cu - cu, w = tri[t]->cv - cv;
+					const segPoint_t *nn[4] = { &c->normals[cu * V + cv], &c->normals[( cu + 1 ) * V + cv],
+												&c->normals[( cu + 1 ) * V + cv + 1], &c->normals[cu * V + cv + 1] };
 					float nrm[3];
 					for ( int a = 0; a < 3; a++ )
 						nrm[a] = ( 1 - s ) * ( 1 - w ) * nn[0]->xyz[a] + s * ( 1 - w ) * nn[1]->xyz[a] + s * w * nn[2]->xyz[a] + ( 1 - s ) * w * nn[3]->xyz[a];

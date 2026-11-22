@@ -101,6 +101,9 @@ static bool SegPatch_Write( patchMesh_t *p, IDataStream *out ){
 	SegPatch_Pieces( g, pieces );
 	const char *str = Patch_ShaderForFile( p );
 
+	if ( p->groupId != 0 ) {
+		out->printf( "//@grp %i\n", p->groupId ); // see Primitive_Write
+	}
 	if ( p->cogId != 0 ) {
 		// the cog's id and numbers (see Primitive_Write); Map_Read puts them into the size line of the cage
 		out->printf( "//@cog %i ", p->cogId );
@@ -245,6 +248,10 @@ void Primitive_Write( brush_t *pBrush, IDataStream *out ){
 	}
 	else
 	{
+		if ( pBrush->patchBrush && pBrush->pPatch->groupId != 0 && g_MapVersion == MAPVERSION_Q3 ) {
+			// a patch in a group: its id, in a comment line the compilers ignore (Map_Read puts it back)
+			out->printf( "//@grp %i\n", pBrush->pPatch->groupId );
+		}
 		if ( pBrush->patchBrush && pBrush->pPatch->cogId != 0 && g_MapVersion == MAPVERSION_Q3 ) {
 			// a patch of a cog: the id and the cog's numbers, in a comment line the compilers ignore.
 			// The patch itself is written as usual. Map_Read puts the numbers back into the patch.

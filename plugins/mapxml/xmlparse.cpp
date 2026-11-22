@@ -51,6 +51,11 @@ void Patch_XMLParse( patchMesh_t *pPatch, xmlNodePtr surface ){
 					xmlFree( str );
 				}
 			}
+			str = (char *)xmlGetProp( current, (xmlChar *)"grp" );
+			if ( str ) {
+				pPatch->groupId = atoi( str );
+				xmlFree( str );
+			}
 			str = (char *)xmlGetProp( current, (xmlChar *)"cog" );
 			if ( str ) {
 				char *cs = strtok( str, " " );

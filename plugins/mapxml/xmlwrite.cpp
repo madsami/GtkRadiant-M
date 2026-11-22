@@ -89,6 +89,10 @@ void Patch_XMLWrite( patchMesh_t *pPatch, xmlNodePtr surface ){
 		sprintf( buf, "%i", pPatch->segV );
 		xmlSetProp( node, (xmlChar *)"segv", (xmlChar *)buf );
 	}
+	if ( pPatch->groupId != 0 ) {
+		sprintf( buf, "%i", pPatch->groupId );
+		xmlSetProp( node, (xmlChar *)"grp", (xmlChar *)buf );
+	}
 	if ( pPatch->cogId != 0 ) {
 		char cogbuf[COG_NPARAM * 20 + 16];
 		char *o = cogbuf;

@@ -20,6 +20,7 @@
  */
 
 #include "stdafx.h"
+#include "patchgroup.h"
 //#include "qe3.h"
 
 /*
@@ -1038,6 +1039,7 @@ void Drag_MouseUp( int nButtons ){
 			{
 				Select_RealCompleteTall( mins, maxs );
 			}
+			PatchGroup_SelectWhole(); // a patch of a group that the rectangle touched brings the rest of its group
 		}
 
 		Sys_UpdateWindows( W_ALL );

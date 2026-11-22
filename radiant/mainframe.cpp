@@ -28,6 +28,7 @@
 #include "stdafx.h"
 #include "segpatch.h"
 #include "cog.h"
+#include "patchgroup.h"
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
 #include <gdk/gdkkeysyms.h>
@@ -137,6 +138,7 @@ SCommandInfo g_Commands[] =
 	{"ViewTextures", GDK_KEY_T, 0, ID_VIEW_TEXTURE, "menu_view_texture"},
 	{"ThickenPatch", GDK_KEY_T, 0x04, ID_CURVE_THICKEN, "menu_curve_thicken"},
 	{"SelectWholeCog", GDK_KEY_A, 0x05, ID_CURVE_COGSELECT, "menu_curve_cogselect"},
+	{"MergeSelection", GDK_KEY_G, 0x05, ID_CURVE_GROUPMERGE, "menu_curve_groupmerge"},
 	{"MakeOverlayPatch", GDK_KEY_Y, 0, ID_CURVE_OVERLAY_SET, "menu_curve_overlay_set"},
 	{"ClearPatchOverlays", GDK_KEY_L, 0x04, ID_CURVE_OVERLAY_CLEAR, "menu_curve_overlay_clear"},
 	{"SurfaceInspector", GDK_KEY_S, 0, ID_TEXTURES_INSPECTOR, "menu_textures_inspector"},
@@ -645,6 +647,9 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_BEVELEDGE: g_pParentWnd->OnCurveBeveledge(); break;
 		  case ID_CURVE_COG: g_pParentWnd->OnCurveCog(); break;
 		  case ID_CURVE_COGSELECT: g_pParentWnd->OnCurveCogSelect(); break;
+		  case ID_CURVE_GROUPMERGE: g_pParentWnd->OnCurveGroupMerge(); break;
+		  case ID_CURVE_GROUPSPLIT: g_pParentWnd->OnCurveGroupSplit(); break;
+		  case ID_CURVE_GROUPSELECT: g_pParentWnd->OnCurveGroupSelect(); break;
 		  case ID_CURVE_SEGCAP: g_pParentWnd->OnCurveSegcap(); break;
 		  case ID_CURVE_SEGCAPTOP: g_pParentWnd->OnCurveSegcaptop(); break;
 		  case ID_CURVE_SEGCAPBOT: g_pParentWnd->OnCurveSegcapbot(); break;
@@ -1640,6 +1645,10 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Make Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COG );
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Cog" ), G_CALLBACK( HandleCommand ), ID_CURVE_COGSELECT );
 		menu_separator( menu );
+		create_menu_item_with_mnemonic( menu, _( "Merge Selection (Group)" ), G_CALLBACK( HandleCommand ), ID_CURVE_GROUPMERGE );
+		create_menu_item_with_mnemonic( menu, _( "Split Group" ), G_CALLBACK( HandleCommand ), ID_CURVE_GROUPSPLIT );
+		create_menu_item_with_mnemonic( menu, _( "Select Whole Group" ), G_CALLBACK( HandleCommand ), ID_CURVE_GROUPSELECT );
+		menu_separator( menu );
 		create_menu_item_with_mnemonic( menu, _( "End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHENDCAP );
 		create_menu_item_with_mnemonic( menu, _( "Improved End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDENDCAP );
 		create_menu_item_with_mnemonic( menu, _( "Bevel" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHBEVEL );
@@ -2312,8 +2321,10 @@ void Clipboard_PasteMap(){
 	if ( g_Clipboard.GetLength() > 0 ) {
 		g_Clipboard.Seek( 0, SEEK_SET );
 		Cog_ImportBegin();
+		PatchGroup_ImportBegin();
 		Map_Import( &g_Clipboard, "xmap", true );
 		Cog_ImportEnd(); // a pasted or cloned cog is a cog of its own
+		PatchGroup_ImportEnd(); // and so is a copy of a group
 	}
 }
 
@@ -6854,6 +6865,18 @@ void MainFrame::OnCurveCog(){
 
 void MainFrame::OnCurveCogSelect(){
 	Cog_SelectWhole();
+}
+
+void MainFrame::OnCurveGroupMerge(){
+	PatchGroup_Merge();
+}
+
+void MainFrame::OnCurveGroupSplit(){
+	PatchGroup_Split();
+}
+
+void MainFrame::OnCurveGroupSelect(){
+	PatchGroup_SelectWhole( true );
 }
 
 void MainFrame::OnCurveSegtoggle(){

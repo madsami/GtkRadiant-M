@@ -239,6 +239,12 @@ void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 	GetToken( false );
 
 	GetToken( false ); //)
+	if ( !strcmp( token, "grp" ) ) {
+		// the group the patch is in (see patchgroup.h), put here by Segpatch_Preprocess
+		GetToken( false );
+		pPatch->groupId = atoi( token );
+		GetToken( false ); //)
+	}
 	if ( strcmp( token, ")" ) ) {
 		// the numbers of a cog (see cog.h): its id, then COG_NPARAM floats, put here by Segpatch_Preprocess
 		pPatch->cogId = atoi( token );
@@ -625,12 +631,21 @@ static char* Segpatch_Preprocess( const char *buf ){
 	// patch that follows ( "( w h 0 0 0 )" becomes "( w h 0 0 0 <id> <numbers> )" ), where Patch_Parse reads it.
 	const char *cogText = NULL;
 	size_t cogLen = 0;
+	// The same for a patch in a group: "//@grp <id>" becomes "grp <id>" in front of the cog's numbers.
+	char grpText[32];
+	bool haveGrp = false;
 	while ( *p )
 	{
 		const char *nl = strchr( p, '\n' );
 		const char *next = nl ? nl + 1 : p + strlen( p );
 		size_t n = next - p; // the line, with its line end
 
+		if ( !skipping && !strncmp( p, "//@grp ", 7 ) ) {
+			sprintf( grpText, "grp %i", atoi( p + 7 ) );
+			haveGrp = true;
+			p = next;
+			continue;
+		}
 		if ( !skipping && !strncmp( p, "//@cog ", 7 ) ) {
 			cogText = p + 7;
 			const char *e = nl ? nl : p + strlen( p );
@@ -640,7 +655,7 @@ static char* Segpatch_Preprocess( const char *buf ){
 			p = next;
 			continue;
 		}
-		if ( !skipping && cogText ) {
+		if ( !skipping && ( cogText || haveGrp ) ) {
 			const char *q = p;
 			while ( *q == ' ' || *q == '\t' )
 				q++;
@@ -662,12 +677,21 @@ static char* Segpatch_Preprocess( const char *buf ){
 				memcpy( o, lineStart, close - lineStart );
 				o += close - lineStart;
 				*o++ = ' ';
-				memcpy( o, cogText, cogLen );
-				o += cogLen;
-				*o++ = ' ';
+				if ( haveGrp ) {
+					const size_t gl = strlen( grpText );
+					memcpy( o, grpText, gl );
+					o += gl;
+					*o++ = ' ';
+				}
+				if ( cogText ) {
+					memcpy( o, cogText, cogLen );
+					o += cogLen;
+					*o++ = ' ';
+				}
 				memcpy( o, close, next - close );
 				o += next - close;
 				cogText = NULL;
+				haveGrp = false;
 				p = next;
 				continue;
 			}

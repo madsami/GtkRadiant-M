@@ -443,6 +443,10 @@ typedef struct {
 	// cog holds that cog's numbers (the same on every patch of it), saved in //@cog comment lines.
 	int cogId;
 	float cog[COG_NPARAM];
+	// patch group (see patchgroup.h in the editor): 0 = not in a group, else the id of the group. Picking or
+	// deselecting a patch of a group selects or deselects all of them, so the group moves as one object.
+	// Saved in //@grp comment lines.
+	int groupId;
 } patchMesh_t;
 
 typedef struct brush_s

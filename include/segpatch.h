@@ -757,8 +757,10 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 		cut[i] = along ? 0 : 1;
 	}
 
-	std::vector<segPoly_t> kept;
+	std::vector<segPoly_t> kept;    // what is left on each side of the polygon, as the hull really is
+	std::vector<segPoly_t> simple;  // the same with every run of cut edges replaced by the straight line between its ends
 	bool ok = true;
+	bool bite = false;              // a run that starts and ends on one edge of the polygon
 	int chains = 0;
 	for ( int i = 0; i < nk && ok; i++ )
 	{
@@ -774,6 +776,12 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 			break;
 		}
 		chains++;
+		{
+			float mid[3], s;
+			for ( int k = 0; k < 3; k++ )
+				mid[k] = 0.5f * ( K[i].xyz[k] + K[e].xyz[k] );
+			bite = SegPatch_Locate( A, mid, tol, &s );
+		}
 		// the kept part on this side: the run backwards (from where it ends to where it starts), then the outline of
 		// the polygon on from the start point round to the end point
 		segPoly_t poly;
@@ -795,10 +803,22 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 			}
 		}
 		std::sort( arc.begin(), arc.end() );
+		// Grid aligned: the new points are only where the hull crosses an edge of the polygon (so they are on the grid
+		// lines of the cylinder), and the cut between two of them is a straight line, not the hull corners in between.
+		// What is left is then convex, usually a quad. The part of the hull that was cut off this way lies inside the
+		// hull, so it stays hidden in the cutter.
+		segPoly_t flat;
+		flat.push_back( K[e % nk] );
+		flat.push_back( K[i] );
 		for ( size_t m = 0; m < arc.size(); m++ )
+		{
 			poly.push_back( A[arc[m].second] );
+			flat.push_back( A[arc[m].second] );
+		}
 		SegPatch_Tidy( poly );
+		SegPatch_Tidy( flat );
 		kept.push_back( poly );
+		simple.push_back( flat );
 	}
 	if ( ok && chains > 0 ) {
 		float sum = aK;
@@ -808,9 +828,12 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 			ok = false; // the outline was not read right: do it the long way
 		}
 	}
+	if ( ok && chains == 1 && bite ) {
+		return 0; // the hull only takes a bite out of one edge: the line between the ends is that edge, nothing is cut
+	}
 	if ( ok && chains > 0 ) {
-		for ( size_t i = 0; i < kept.size(); i++ )
-			SegPatch_EmitPoly( kept[i], out );
+		for ( size_t i = 0; i < simple.size(); i++ )
+			SegPatch_EmitPoly( simple[i], out );
 		return 2;
 	}
 	// the hull is inside the polygon without touching its outline, or something odd: plane by plane

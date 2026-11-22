@@ -760,8 +760,14 @@ inline void SegPatch_SimplifyRun( const segPoly_t &run, float tol, std::vector<c
 	}
 }
 
-// how far a hull corner may be from the line between its neighbours and still be dropped (map units)
+// how far a hull corner may be from the line between its neighbours and still be dropped: this share of the
+// shortest edge of the cell (the bigger the cell, the more it may be), but never less than SEGPATCH_CUT_TOL map units
+#ifndef SEGPATCH_CUT_TOL
 #define SEGPATCH_CUT_TOL 1.0f
+#endif
+#ifndef SEGPATCH_CUT_REL
+#define SEGPATCH_CUT_REL 0.15f
+#endif
 
 // A convex polygon minus a hull. Returns 0 if the hull does not touch it (nothing added to out), 1 if it is
 // all inside, 2 if what is left of it was added to out (triangles and convex quads). The part inside is the
@@ -787,6 +793,16 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 	}
 
 	const int na = (int)A.size(), nk = (int)K.size();
+	float shortEdge = 1e9f;
+	for ( int i = 0; i < na; i++ )
+	{
+		const float *p = A[i].xyz, *q = A[( i + 1 ) % na].xyz;
+		const float l = sqrtf( ( p[0] - q[0] ) * ( p[0] - q[0] ) + ( p[1] - q[1] ) * ( p[1] - q[1] ) + ( p[2] - q[2] ) * ( p[2] - q[2] ) );
+		if ( l < shortEdge ) {
+			shortEdge = l;
+		}
+	}
+	const float flatTol = SEGPATCH_CUT_REL * shortEdge > SEGPATCH_CUT_TOL ? SEGPATCH_CUT_REL * shortEdge : SEGPATCH_CUT_TOL;
 	const float tol = 0.02f;
 	std::vector<char> onA( nk ), cut( nk );
 	std::vector<float> pos( nk, 0.0f );
@@ -833,7 +849,7 @@ inline int SegPatch_SubtractHull( const segPoly_t &A, const seatHull_t &h, std::
 			for ( int m = i; m <= j; m++ )
 				run.push_back( K[m % nk] );
 			std::vector<char> keep;
-			SegPatch_SimplifyRun( run, SEGPATCH_CUT_TOL, keep );
+			SegPatch_SimplifyRun( run, flatTol, keep );
 			for ( int m = (int)run.size() - 1; m >= 0; m-- )
 				if ( keep[m] ) {
 					flat.push_back( run[m] );

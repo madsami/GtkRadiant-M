@@ -18,6 +18,9 @@
 // Merge Selection: the selected patches become one group. Returns the number of patches grouped.
 int PatchGroup_Merge();
 
+// an id that no group in the map has (for patches that are made as a group)
+int PatchGroup_NextId();
+
 // Split Group: every patch of the groups that have a patch selected leaves its group. Returns how many did.
 int PatchGroup_Split();
 

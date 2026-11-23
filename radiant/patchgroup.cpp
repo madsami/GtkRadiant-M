@@ -32,6 +32,10 @@ static void PG_SelectedIds( std::vector<int> &ids ){
 		}
 }
 
+int PatchGroup_NextId(){
+	return PG_TopId() + 1;
+}
+
 int PatchGroup_Merge(){
 	std::vector<brush_t*> patches;
 	int others = 0;

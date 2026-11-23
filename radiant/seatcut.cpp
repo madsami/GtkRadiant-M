@@ -10,6 +10,7 @@
 #include <string.h>
 #include "segpatch.h"
 #include "seatcut.h"
+#include "patchgroup.h"
 #include "straight.h"
 
 #ifdef min
@@ -522,6 +523,224 @@ static int Seat_TopId(){
 	for ( size_t i = 0; i < all.size(); i++ )
 		top = std::max( top, all[i]->seatId );
 	return top;
+}
+
+// =============================================================================
+// Extract Cut Piece: what the cutter takes out of the host, kept as patches of their own
+
+// The part of the grid that lies inside the hull: the cells that are inside as a whole (put together in rectangles, the
+// grid points are the surface) and the polygons of the cells that the hull crosses. The complement of SegPatch_Cut.
+static void Seat_Inside( const segGrid_t &g, const seatHull_t &h, std::vector<segRect_t> &rects, std::vector<segFrag_t> &frags ){
+	const int CU = g.U - 1, CV = g.V - 1;
+	if ( CU < 1 || CV < 1 || h.n < 1 ) {
+		return;
+	}
+	const float eps = 0.001f;
+	const float cuv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+	std::vector<char> in( CU * CV, 0 ), used( CU * CV, 0 );
+	for ( int u = 0; u < CU; u++ )
+	{
+		for ( int v = 0; v < CV; v++ )
+		{
+			const segPoint_t *c[4] = { &g.p[u * g.V + v], &g.p[( u + 1 ) * g.V + v], &g.p[( u + 1 ) * g.V + v + 1], &g.p[u * g.V + v + 1] };
+			bool apart = false, inside = true;
+			for ( int k = 0; k < h.n; k++ )
+			{
+				int outCount = 0, inCount = 0;
+				for ( int q = 0; q < 4; q++ )
+				{
+					if ( SegPatch_PlaneDist( h.pl[k], c[q]->xyz ) > eps ) {
+						outCount++;
+					}
+					else{
+						inCount++;
+					}
+				}
+				if ( outCount == 4 ) {
+					apart = true;
+					break;
+				}
+				if ( inCount < 4 ) {
+					inside = false;
+				}
+			}
+			if ( apart ) {
+				continue;
+			}
+			if ( inside ) {
+				in[u * CV + v] = 1;
+				continue;
+			}
+			segPoly_t rest( 4 );
+			for ( int q = 0; q < 4; q++ )
+			{
+				for ( int k = 0; k < 3; k++ )
+					rest[q].xyz[k] = c[q]->xyz[k];
+				rest[q].st[0] = c[q]->st[0];
+				rest[q].st[1] = c[q]->st[1];
+				rest[q].cu = u + cuv[q][0];
+				rest[q].cv = v + cuv[q][1];
+			}
+			for ( int k = 0; k < h.n && rest.size() >= 3; k++ )
+			{
+				segPoly_t o, i;
+				SegPatch_SplitPoly( rest, h.pl[k], o, i );
+				rest.swap( i );
+			}
+			if ( rest.size() >= 3 && SegPatch_PolyArea( rest ) > 0.01f ) {
+				segFrag_t f;
+				f.cu = u;
+				f.cv = v;
+				f.poly = rest;
+				frags.push_back( f );
+			}
+		}
+	}
+	for ( int v = 0; v < CV; v++ )
+	{
+		for ( int u = 0; u < CU; u++ )
+		{
+			if ( !in[u * CV + v] || used[u * CV + v] ) {
+				continue;
+			}
+			int u2 = u;
+			while ( u2 < CU && in[u2 * CV + v] && !used[u2 * CV + v] )
+				u2++;
+			int v2 = v + 1;
+			for ( ; v2 < CV; v2++ )
+			{
+				bool full = true;
+				for ( int x = u; x < u2 && full; x++ )
+					if ( !in[x * CV + v2] || used[x * CV + v2] ) {
+						full = false;
+					}
+				if ( !full ) {
+					break;
+				}
+			}
+			for ( int x = u; x < u2; x++ )
+				for ( int y = v; y < v2; y++ )
+					used[x * CV + y] = 1;
+			segRect_t rc = { u, u2, v, v2 };
+			rects.push_back( rc );
+		}
+	}
+}
+
+// Curve > Extract Cut Piece: the selected patches are the cutter. Where its hull cuts a hole in a host, what was taken
+// out is made again as ordinary patches (one group, facing and textured like the host). They are copies: the hole stays
+// as it is, because it follows the cutter, so the piece can be moved, turned or used as a hatch without touching it.
+int Seat_ExtractPiece(){
+	std::set<int> ids;
+	std::set<patchMesh_t*> selP;
+	for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+		if ( b->patchBrush && b->pPatch ) {
+			selP.insert( b->pPatch );
+			if ( b->pPatch->seatId > 0 ) {
+				ids.insert( b->pPatch->seatId );
+			}
+		}
+	if ( ids.empty() ) {
+		Sys_Printf( "Extract Cut Piece: select the cutter (a patch of it) first. A patch that is selected as well as the cutter limits the piece to that host.\n" );
+		return 0;
+	}
+	Seat_Apply( false ); // the holes as the cutter is now
+	std::vector<patchMesh_t*> all = Seat_AllPatches();
+	std::vector<patchMesh_t*> hosts;
+	std::vector<int> hullOf;
+	bool limited = false;
+	for ( size_t i = 0; i < all.size(); i++ )
+	{
+		patchMesh_t *p = all[i];
+		if ( p->segH <= 0 || !p->pSymbiot ) {
+			continue;
+		}
+		for ( int k = 0; k < p->seatCount; k++ )
+			if ( ids.count( p->seat[k].id ) ) {
+				hosts.push_back( p );
+				hullOf.push_back( k );
+				if ( selP.count( p ) ) {
+					limited = true;
+				}
+			}
+	}
+	std::vector<segPiece_t> pieces;
+	std::vector<patchMesh_t*> pieceHost;
+	int nHosts = 0;
+	for ( size_t i = 0; i < hosts.size(); i++ )
+	{
+		patchMesh_t *host = hosts[i];
+		if ( limited && !selP.count( host ) ) {
+			continue;
+		}
+		const segGrid_t *g = Patch_GetSegGrid( host );
+		if ( !g ) {
+			continue;
+		}
+		std::vector<segRect_t> rects;
+		std::vector<segFrag_t> frags;
+		Seat_Inside( *g, host->seat[hullOf[i]], rects, frags );
+		const size_t before = pieces.size();
+		for ( size_t r = 0; r < rects.size(); r++ )
+			SegPatch_RectPieces( *g, rects[r].u0, rects[r].u1, rects[r].v0, rects[r].v1, pieces );
+		for ( size_t f = 0; f < frags.size(); f++ )
+			SegPatch_FragPieces( frags[f], pieces );
+		if ( pieces.size() > before ) {
+			nHosts++;
+		}
+		pieceHost.resize( pieces.size(), host );
+	}
+	if ( pieces.empty() ) {
+		Sys_Printf( "Extract Cut Piece: the cutter has not cut a hole in anything (a host has to be segmented, with Can be cut on).\n" );
+		return 0;
+	}
+
+	const int gid = pieces.size() > 1 ? PatchGroup_NextId() : 0;
+	std::vector<brush_t*> made;
+	for ( size_t i = 0; i < pieces.size(); i++ )
+	{
+		const segPiece_t &pc = pieces[i];
+		patchMesh_t *host = pieceHost[i];
+		if ( pc.width > MAX_PATCH_WIDTH || pc.height > MAX_PATCH_HEIGHT ) {
+			continue;
+		}
+		patchMesh_t *s = MakeNewPatch();
+		s->pShader = host->pShader;
+		s->d_texture = host->d_texture;
+		s->contents = host->contents;
+		s->flags = host->flags;
+		s->value = host->value;
+		s->width = pc.width;
+		s->height = pc.height;
+		s->type = PATCH_GENERIC;
+		for ( int x = 0; x < pc.width; x++ )
+			for ( int y = 0; y < pc.height; y++ )
+			{
+				const segPoint_t &c = pc.c[x * pc.height + y];
+				VectorCopy( c.xyz, s->ctrl[x][y].xyz );
+				s->ctrl[x][y].st[0] = c.st[0];
+				s->ctrl[x][y].st[1] = c.st[1];
+			}
+		s->groupId = gid;
+		s->hasFrame = host->hasFrame;
+		memcpy( s->frameR, host->frameR, sizeof( s->frameR ) );
+		brush_t *sb = AddBrushForPatch( s, false );
+		Brush_AddToList( sb, &active_brushes );
+		Entity_LinkBrush( host->pSymbiot->owner ? host->pSymbiot->owner : world_entity, sb );
+		Brush_Build( sb );
+		s->bDirty = true;
+		Patch_Rebuild( s );
+		Undo_EndBrush( sb );
+		made.push_back( sb );
+	}
+	Select_Deselect();
+	for ( size_t i = 0; i < made.size(); i++ )
+		Select_Brush( made[i] );
+	UpdatePatchInspector();
+	Sys_UpdateWindows( W_ALL );
+	Sys_Printf( "Extract Cut Piece: %d patch(es) from %d host patch(es), %s. The hole stays where the cutter is.\n", (int)made.size(), nHosts,
+				gid ? "one group (move it with the selection)" : "selected" );
+	return (int)made.size();
 }
 
 bool Seat_MakeSelected(){

@@ -32,6 +32,10 @@ bool Seat_SetCanBeCutSelected( bool can );
 // The outline of the active cutters, drawn in every view
 void Seat_Draw();
 
+// Extract Cut Piece: the selected patches are the cutter; what it cut out of the hosts is made again as ordinary
+// patches (one group), selected. Returns how many patches were made.
+int Seat_ExtractPiece();
+
 // Select every patch of the cutter(s) that have a patch selected. Returns how many patches were added.
 int Seat_SelectWhole();
 

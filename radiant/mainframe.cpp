@@ -665,6 +665,7 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_SEATCUT: g_pParentWnd->OnCurveSeatcut(); break;
 		  case ID_CURVE_SEATCLEAR: g_pParentWnd->OnCurveSeatclear(); break;
 		  case ID_CURVE_SEATSELECT: g_pParentWnd->OnCurveSeatselect(); break;
+		  case ID_CURVE_SEATEXTRACT: g_pParentWnd->OnCurveSeatextract(); break;
 		  case ID_CURVE_PATCHDENSETUBE: g_pParentWnd->OnCurvePatchdensetube(); break;
 		  case ID_CURVE_PATCHVERYDENSETUBE: g_pParentWnd->OnCurvePatchverydensetube(); break;
 		  case ID_CURVE_PATCHSQUARE: g_pParentWnd->OnCurvePatchsquare(); break;
@@ -1665,6 +1666,7 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Cap Segmented, Bottom" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEGCAPBOT );
 		create_menu_item_with_mnemonic( menu, _( "Seat Cut (selected is the cutter)" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATCUT );
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Cutter" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATSELECT );
+		create_menu_item_with_mnemonic( menu, _( "Extract Cut Piece (selected is the cutter)" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATEXTRACT );
 		create_menu_item_with_mnemonic( menu, _( "Clear Seat Cut" ), G_CALLBACK( HandleCommand ), ID_CURVE_SEATCLEAR );
 		create_menu_item_with_mnemonic( menu, _( "Bevel Edge..." ), G_CALLBACK( HandleCommand ), ID_CURVE_BEVELEDGE );
 		create_menu_item_with_mnemonic( menu, _( "Bridge Edge Loops" ), G_CALLBACK( HandleCommand ), ID_CURVE_BRIDGELOOPS );
@@ -8470,4 +8472,10 @@ void MainFrame::OnCurveSeatclear(){
 
 void MainFrame::OnCurveSeatselect(){
 	Seat_SelectWhole();
+}
+
+void MainFrame::OnCurveSeatextract(){
+	Undo_Start( "extract cut piece" );
+	Seat_ExtractPiece();
+	Undo_End();
 }

@@ -1069,6 +1069,14 @@ static void OnSeatBoxToggled( GtkWidget *widget, gpointer data ){
 	Undo_End();
 }
 
+static GtkWidget *g_seatExtractBtn = NULL;  // "Extract piece": keep what the cutter takes out of the hosts as patches
+
+static void OnSeatExtract( GtkWidget *widget, gpointer data ){
+	Undo_Start( "extract cut piece" );
+	Seat_ExtractPiece();
+	Undo_End();
+}
+
 static void SegPanelBuild(){	GtkWidget *hbox, *label, *vbox, *row2;
 	GtkAdjustment *adj;
 
@@ -1104,6 +1112,11 @@ static void SegPanelBuild(){	GtkWidget *hbox, *label, *vbox, *row2;
 	gtk_widget_set_tooltip_text( g_seatCanBox, _( "Off: no cutter makes a hole in this patch" ) );
 	gtk_box_pack_start( GTK_BOX( row2 ), g_seatCanBox, FALSE, FALSE, 0 );
 	gtk_widget_show( g_seatCanBox );
+	g_seatExtractBtn = gtk_button_new_with_label( _( "Extract piece" ) );
+	gtk_widget_set_tooltip_text( g_seatExtractBtn, _( "Keep what this cutter takes out of the patches it sits in: it becomes patches of their own (a group) that can be moved, say as a hatch. The hole stays" ) );
+	gtk_box_pack_start( GTK_BOX( row2 ), g_seatExtractBtn, FALSE, FALSE, 0 );
+	gtk_widget_show( g_seatExtractBtn );
+	g_signal_connect( G_OBJECT( g_seatExtractBtn ), "clicked", G_CALLBACK( OnSeatExtract ), NULL );
 	g_signal_connect( G_OBJECT( g_seatCutBox ), "toggled", G_CALLBACK( OnSeatBoxToggled ), NULL );
 	g_signal_connect( G_OBJECT( g_seatCanBox ), "toggled", G_CALLBACK( OnSeatBoxToggled ), NULL );
 
@@ -1158,6 +1171,7 @@ static gboolean SegPanelTick( gpointer data ){
 		}
 		bool isCutter = false, canBeCut = false;
 		if ( Seat_GetSelected( &isCutter, &canBeCut ) ) {
+			gtk_widget_set_sensitive( g_seatExtractBtn, isCutter ? TRUE : FALSE );
 			if ( ( gtk_toggle_button_get_active( GTK_TOGGLE_BUTTON( g_seatCutBox ) ) ? true : false ) != isCutter ) {
 				gtk_toggle_button_set_active( GTK_TOGGLE_BUTTON( g_seatCutBox ), isCutter ? TRUE : FALSE );
 			}

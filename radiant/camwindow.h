@@ -153,6 +153,7 @@ guint m_FocusOutHandler_id;
 void OnCreate();
 void OnExpose();
 void OnLButtonDown( guint32 flags, int x, int y );
+void OnLButtonDblClk( guint32 flags, int x, int y );
 void OnRButtonDown( guint32 flags, int x, int y );
 void OnMButtonDown( guint32 flags, int x, int y );
 void OnLButtonUp( guint32 flags, int pointx, int pointy );

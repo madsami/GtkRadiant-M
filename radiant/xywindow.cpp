@@ -1244,6 +1244,16 @@ void XYWnd::OnLButtonDown( guint32 flags, int pointx, int pointy ){
 	else{ OriginalButtonDown( flags, pointx, pointy ); }
 }
 
+// a double click picks the whole connected object under the cursor (see PatchGroup_SelectConnected)
+void XYWnd::OnLButtonDblClk( guint32 flags, int pointx, int pointy ){
+	if ( ClipMode() || PathMode() ) {
+		return;
+	}
+	g_pParentWnd->SetActiveXY( this );
+	Drag_DoubleClickNext();
+	OriginalButtonDown( flags, pointx, pointy );
+}
+
 void XYWnd::OnMButtonDown( guint32 flags, int pointx, int pointy ){
 	OriginalButtonDown( flags, pointx, pointy );
 }

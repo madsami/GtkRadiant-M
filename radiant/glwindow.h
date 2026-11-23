@@ -48,6 +48,7 @@ public:
   virtual void OnExpose() { }
 
   virtual void OnLButtonDown( guint32 flags, int x, int y ) { }
+  virtual void OnLButtonDblClk( guint32 flags, int x, int y ) { }
   virtual void OnRButtonDown( guint32 flags, int x, int y ) { }
   virtual void OnMButtonDown( guint32 flags, int x, int y ) { }
   virtual void OnLButtonUp( guint32 flags, int pointx, int pointy ) { }

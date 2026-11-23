@@ -195,6 +195,12 @@ void CamWnd::OnLButtonDown( guint32 nFlags, int pointx, int pointy ){
 	OriginalMouseDown( nFlags, pointx, pointy );
 }
 
+// a double click picks the whole connected object under the cursor (see PatchGroup_SelectConnected)
+void CamWnd::OnLButtonDblClk( guint32 nFlags, int pointx, int pointy ){
+	Drag_DoubleClickNext();
+	OriginalMouseDown( nFlags, pointx, pointy );
+}
+
 void CamWnd::OnLButtonUp( guint32 nFlags, int pointx, int pointy ){
 	OriginalMouseUp( nFlags, pointx, pointy );
 }

@@ -185,6 +185,7 @@ protected:
 void OnCreate();
 void OnExpose();
 void OnLButtonDown( guint32 flags, int pointx, int pointy );
+void OnLButtonDblClk( guint32 flags, int pointx, int pointy );
 void OnRButtonDown( guint32 flags, int pointx, int pointy );
 void OnMButtonDown( guint32 flags, int pointx, int pointy );
 void OnLButtonUp( guint32 flags, int pointx, int pointy );

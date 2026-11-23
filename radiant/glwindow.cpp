@@ -104,7 +104,9 @@ static void button_press( GtkWidget *widget, GdkEventButton *event, gpointer dat
 		}
 	}
 	else if ( event->type == GDK_2BUTTON_PRESS ) {
-		// do nothing
+		if ( event->button == 1 ) {
+			wnd->OnLButtonDblClk( flags, (int)event->x, (int)event->y );
+		}
 	}
 }
 

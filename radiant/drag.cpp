@@ -57,6 +57,10 @@ qboolean drag_first;
    The grid views work in world units (tall: the height does not count), the camera in window pixels; the corners
    are kept in d_vAreaTL / d_vAreaBR.
  */
+static bool g_dblClickNext = false; // the Drag_Begin that comes next is a double click
+void Drag_DoubleClickNext(){
+	g_dblClickNext = true;
+}
 static bool g_marqCam = false;     // the rectangle is in the camera (window pixels), else in a grid view
 
 // draws the rectangle (corners in the units of the current projection): a soft magenta-grey fill you can see
@@ -478,6 +482,16 @@ void Drag_Begin( int x, int y, int buttons,
 	peLink = NULL;
 
 	altdown = Sys_AltDown();
+
+	// double click with the left button: the whole object under the cursor (everything that shares vertices with the
+	// patch that was hit); Shift or Ctrl adds it to the selection, otherwise it replaces it
+	if ( g_dblClickNext ) {
+		g_dblClickNext = false;
+		if ( buttons & MK_LBUTTON && !altdown && g_qeglobals.d_select_mode != sel_curvepoint && g_qeglobals.d_select_mode != sel_vertex ) {
+			PatchGroup_SelectConnected( origin, dir, sf_camera, ( buttons & ( MK_SHIFT | MK_CONTROL ) ) != 0 );
+		}
+		return;
+	}
 
 	// alt-LBUTTON on a seam between two patches picks it for beveling (ctrl-alt adds to the picked
 	// ones); anywhere else the click does what it always did

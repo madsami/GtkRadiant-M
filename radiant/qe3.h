@@ -213,6 +213,8 @@ char *ExpandReletivePath( char *p );
 void Drag_Begin( int x, int y, int buttons, vec3_t xaxis, vec3_t yaxis, vec3_t origin, vec3_t dir, bool sf_camera = false );
 void Drag_MouseMoved( int x, int y, int buttons );
 void Drag_MouseUp( int nButtons = 0 );
+// the next Drag_Begin comes from a double click: it picks the whole connected object instead of starting a drag
+void Drag_DoubleClickNext();
 
 //
 // csg.c

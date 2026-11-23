@@ -3,6 +3,7 @@
 #include "stdafx.h"
 #include <vector>
 #include <algorithm>
+#include <map>
 #include "patchgroup.h"
 #include "straight.h"
 
@@ -139,6 +140,147 @@ void PatchGroup_DeselectWhole( brush_t *brush ){
 		Brush_AddToList( drop[i], &active_brushes );
 	}
 	UpdatePatchInspector();
+}
+
+// =============================================================================
+// double click: the whole connected object
+
+namespace {
+struct ConnPt {
+	float p[3];
+	int patch;
+};
+
+typedef unsigned long long ConnKey;
+
+const float CONN_CELL = 0.5f; // size of a hash cell
+const float CONN_TOL = 0.2f;  // two points closer than this are the same vertex
+
+ConnKey Conn_Key( int x, int y, int z ){
+	return ( (ConnKey)( x + 1048576 ) & 0x1FFFFF ) | ( ( (ConnKey)( y + 1048576 ) & 0x1FFFFF ) << 21 ) | ( ( (ConnKey)( z + 1048576 ) & 0x1FFFFF ) << 42 );
+}
+
+int Conn_Find( std::vector<int> &up, int i ){
+	while ( up[i] != i )
+	{
+		up[i] = up[up[i]];
+		i = up[i];
+	}
+	return i;
+}
+}
+
+int PatchGroup_SelectConnected( vec3_t origin, vec3_t dir, bool camera, bool add ){
+	if ( Straight_Active() ) {
+		return 0;
+	}
+	trace_t t = Test_Ray( origin, dir, camera ? SF_CAMERA : SF_ENTITIES_FIRST );
+	if ( !t.brush || !t.brush->patchBrush || !t.brush->pPatch ) {
+		return 0;
+	}
+
+	// the patches of the same entity that are there to be picked
+	std::vector<brush_t*> patches;
+	int seed = -1;
+	for ( int list = 0; list < 2; list++ )
+	{
+		brush_t *head = list ? &active_brushes : &selected_brushes;
+		for ( brush_t *b = head->next; b != head; b = b->next )
+		{
+			if ( !b->patchBrush || !b->pPatch || b->owner != t.brush->owner || b->bFiltered ) {
+				continue;
+			}
+			if ( b == t.brush ) {
+				seed = (int)patches.size();
+			}
+			patches.push_back( b );
+		}
+	}
+	if ( seed < 0 ) {
+		return 0;
+	}
+
+	// the points on the edges of every patch, in a hash of cells
+	std::vector<ConnPt> pts;
+	std::map<ConnKey, std::vector<int> > cells;
+	for ( size_t i = 0; i < patches.size(); i++ )
+	{
+		const patchMesh_t *p = patches[i]->pPatch;
+		for ( int c = 0; c < p->width; c++ )
+			for ( int r = 0; r < p->height; r++ )
+			{
+				if ( c != 0 && c != p->width - 1 && r != 0 && r != p->height - 1 ) {
+					continue; // inside the patch, it cannot touch another one
+				}
+				ConnPt q;
+				VectorCopy( p->ctrl[c][r].xyz, q.p );
+				q.patch = (int)i;
+				cells[Conn_Key( (int)floor( q.p[0] / CONN_CELL ), (int)floor( q.p[1] / CONN_CELL ), (int)floor( q.p[2] / CONN_CELL ) )].push_back( (int)pts.size() );
+				pts.push_back( q );
+			}
+	}
+
+	// patches that have a point in common are one object
+	std::vector<int> up( patches.size() );
+	for ( size_t i = 0; i < up.size(); i++ )
+		up[i] = (int)i;
+	for ( size_t k = 0; k < pts.size(); k++ )
+	{
+		const int cx = (int)floor( pts[k].p[0] / CONN_CELL );
+		const int cy = (int)floor( pts[k].p[1] / CONN_CELL );
+		const int cz = (int)floor( pts[k].p[2] / CONN_CELL );
+		for ( int dx = -1; dx <= 1; dx++ )
+			for ( int dy = -1; dy <= 1; dy++ )
+				for ( int dz = -1; dz <= 1; dz++ )
+				{
+					std::map<ConnKey, std::vector<int> >::const_iterator it = cells.find( Conn_Key( cx + dx, cy + dy, cz + dz ) );
+					if ( it == cells.end() ) {
+						continue;
+					}
+					for ( size_t m = 0; m < it->second.size(); m++ )
+					{
+						const ConnPt &o = pts[it->second[m]];
+						if ( o.patch == pts[k].patch ) {
+							continue;
+						}
+						if ( fabsf( o.p[0] - pts[k].p[0] ) <= CONN_TOL && fabsf( o.p[1] - pts[k].p[1] ) <= CONN_TOL && fabsf( o.p[2] - pts[k].p[2] ) <= CONN_TOL ) {
+							const int a = Conn_Find( up, o.patch );
+							const int b = Conn_Find( up, pts[k].patch );
+							if ( a != b ) {
+								up[a] = b;
+							}
+						}
+					}
+				}
+	}
+
+	const int root = Conn_Find( up, seed );
+	std::vector<brush_t*> object;
+	for ( size_t i = 0; i < patches.size(); i++ )
+		if ( Conn_Find( up, (int)i ) == root ) {
+			object.push_back( patches[i] );
+		}
+
+	// select them
+	std::vector<brush_t*> already;
+	if ( add ) {
+		for ( brush_t *b = selected_brushes.next; b != &selected_brushes; b = b->next )
+			already.push_back( b );
+	}
+	else{
+		Select_Deselect();
+	}
+	for ( size_t i = 0; i < object.size(); i++ )
+		if ( std::find( already.begin(), already.end(), object[i] ) == already.end() ) {
+			Select_Brush( object[i], false, false );
+		}
+	const int n = (int)object.size();
+	PatchGroup_SelectWhole(); // anything that was grouped on purpose comes along as well
+	UpdatePatchInspector();
+	UpdateSurfaceDialog();
+	Sys_Printf( "Select Connected: %d patches are one object.\n", n );
+	Sys_UpdateWindows( W_ALL );
+	return n;
 }
 
 // =============================================================================

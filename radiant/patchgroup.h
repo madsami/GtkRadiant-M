@@ -31,6 +31,11 @@ int PatchGroup_SelectWhole( bool bPrint = false );
 // A patch of a group was just deselected by a click: deselect the rest of its group too.
 void PatchGroup_DeselectWhole( brush_t *brush );
 
+// Double click: the patch under the ray and everything that is connected to it through shared vertices (patches whose
+// edge control points meet), in the same entity. add = keep the current selection and add to it, else replace it.
+// Returns the number of patches that make up the object (0: no patch was hit).
+int PatchGroup_SelectConnected( vec3_t origin, vec3_t dir, bool camera, bool add );
+
 // around a paste / clone: the copies of a group get an id of their own
 void PatchGroup_ImportBegin();
 void PatchGroup_ImportEnd();

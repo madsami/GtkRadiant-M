@@ -627,6 +627,201 @@ static void Seat_Inside( const segGrid_t &g, const seatHull_t &h, std::vector<se
 	}
 }
 
+// the grid as a surface: the point (and texture coordinate) at the grid coordinates cu (along the width) and cv, as
+// SegVert_t carries them (cell index + fraction); a ring wraps round
+static void Seat_GridEval( const segGrid_t &g, bool ring, float cu, float cv, float *xyz, float *st ){
+	const int CU = g.U - 1, CV = g.V - 1;
+	if ( ring ) {
+		cu = fmodf( cu, (float)CU );
+		if ( cu < 0 ) {
+			cu += CU;
+		}
+	}
+	cu = cu < 0 ? 0 : ( cu > CU ? (float)CU : cu );
+	cv = cv < 0 ? 0 : ( cv > CV ? (float)CV : cv );
+	int iu = (int)cu, iv = (int)cv;
+	if ( iu > CU - 1 ) {
+		iu = CU - 1;
+	}
+	if ( iv > CV - 1 ) {
+		iv = CV - 1;
+	}
+	const float fu = cu - iu, fv = cv - iv;
+	const segPoint_t &a = g.p[iu * g.V + iv], &b = g.p[( iu + 1 ) * g.V + iv], &c = g.p[( iu + 1 ) * g.V + iv + 1], &d = g.p[iu * g.V + iv + 1];
+	const float wa = ( 1 - fu ) * ( 1 - fv ), wb = fu * ( 1 - fv ), wc = fu * fv, wd = ( 1 - fu ) * fv;
+	for ( int k = 0; k < 3; k++ )
+		xyz[k] = wa * a.xyz[k] + wb * b.xyz[k] + wc * c.xyz[k] + wd * d.xyz[k];
+	for ( int k = 0; k < 2; k++ )
+		st[k] = wa * a.st[k] + wb * b.st[k] + wc * c.st[k] + wd * d.st[k];
+}
+
+static bool Seat_GridRing( const segGrid_t &g ){
+	if ( g.U < 4 ) {
+		return false;
+	}
+	for ( int v = 0; v < g.V; v++ )
+	{
+		const float *a = g.p[v].xyz, *b = g.p[( g.U - 1 ) * g.V + v].xyz;
+		if ( fabsf( a[0] - b[0] ) + fabsf( a[1] - b[1] ) + fabsf( a[2] - b[2] ) > 0.05f ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// The piece with the topology of the hole: the outline of the hole is the line where the hull cuts the host, and it bends
+// only where the cutter has a wireframe edge (the corners; between two of them the cut runs straight, which is how the hole
+// itself is cut). The corners are joined to a middle point, so a round cutter gives a fan of equal wedges, one for every
+// side of the cutter, the way a cap is made. Every wedge is a patch whose outer edge is the straight line between two
+// corners, exactly the edge of the hole, and whose inner rows follow the surface of the host. False if the outline is not
+// a closed line with corners (the hole runs off the host, say).
+static bool Seat_Cookie( const segGrid_t &g, const seatHull_t &h, const std::vector<segFrag_t> &frags, std::vector<segPiece_t> &out ){
+	struct Edge
+	{
+		segVert_t a, b;
+		bool used;
+	};
+	std::vector<Edge> edges;
+	for ( size_t f = 0; f < frags.size(); f++ )
+	{
+		const segPoly_t &p = frags[f].poly;
+		for ( size_t i = 0; i < p.size(); i++ )
+		{
+			const segVert_t &a = p[i], &b = p[( i + 1 ) % p.size()];
+			for ( int k = 0; k < h.n; k++ )
+				if ( fabsf( SegPatch_PlaneDist( h.pl[k], a.xyz ) ) < 0.02f && fabsf( SegPatch_PlaneDist( h.pl[k], b.xyz ) ) < 0.02f ) {
+					Edge e;
+					e.a = a;
+					e.b = b;
+					e.used = false;
+					edges.push_back( e );
+					break;
+				}
+		}
+	}
+	if ( edges.empty() ) {
+		return false;
+	}
+	const bool ring = Seat_GridRing( g );
+	const int CU = g.U - 1;
+	std::vector<std::vector<segVert_t> > loops;
+	for ( size_t s = 0; s < edges.size(); s++ )
+	{
+		if ( edges[s].used ) {
+			continue;
+		}
+		std::vector<segVert_t> loop;
+		loop.push_back( edges[s].a );
+		edges[s].used = true;
+		size_t cur = s;
+		for ( ;; )
+		{
+			const segVert_t end = edges[cur].b;
+			if ( SegPatch_SamePoint( end.xyz, loop[0].xyz ) || fabsf( end.xyz[0] - loop[0].xyz[0] ) + fabsf( end.xyz[1] - loop[0].xyz[1] ) + fabsf( end.xyz[2] - loop[0].xyz[2] ) < 0.02f ) {
+				break;
+			}
+			loop.push_back( end );
+			int next = -1;
+			for ( size_t j = 0; j < edges.size() && next < 0; j++ )
+				if ( !edges[j].used && fabsf( edges[j].a.xyz[0] - end.xyz[0] ) + fabsf( edges[j].a.xyz[1] - end.xyz[1] ) + fabsf( edges[j].a.xyz[2] - end.xyz[2] ) < 0.02f ) {
+					next = (int)j;
+				}
+			if ( next < 0 ) {
+				return false; // not closed
+			}
+			edges[next].used = true;
+			cur = next;
+		}
+		loops.push_back( loop );
+	}
+	std::vector<segPiece_t> made;
+	for ( size_t l = 0; l < loops.size(); l++ )
+	{
+		std::vector<segVert_t> corner;
+		for ( size_t i = 0; i < loops[l].size(); i++ )
+			if ( SegPatch_OnPlanes( h, loops[l][i].xyz ) >= 2 ) {
+				corner.push_back( loops[l][i] );
+			}
+		if ( corner.size() < 3 ) {
+			return false;
+		}
+		if ( ring ) {
+			// a hole across the seam of a ring: the grid coordinates run on past the end
+			float lo = 1e30f, hi = -1e30f;
+			for ( size_t i = 0; i < corner.size(); i++ )
+			{
+				lo = corner[i].cu < lo ? corner[i].cu : lo;
+				hi = corner[i].cu > hi ? corner[i].cu : hi;
+			}
+			if ( hi - lo > 0.5f * CU ) {
+				for ( size_t i = 0; i < corner.size(); i++ )
+					if ( corner[i].cu < 0.5f * CU ) {
+						corner[i].cu += CU;
+					}
+			}
+		}
+		const int m = (int)corner.size();
+		float ccu = 0, ccv = 0;
+		for ( int i = 0; i < m; i++ )
+		{
+			ccu += corner[i].cu;
+			ccv += corner[i].cv;
+		}
+		ccu /= m;
+		ccv /= m;
+		float C[3], Cst[2];
+		Seat_GridEval( g, ring, ccu, ccv, C, Cst );
+		for ( int i = 0; i < m; i++ )
+		{
+			const segVert_t &va = corner[i], &vb = corner[( i + 1 ) % m];
+			float B[3][3], Bst[3][2], Gcu[3], Gcv[3];
+			for ( int k = 0; k < 3; k++ )
+			{
+				B[0][k] = va.xyz[k];
+				B[2][k] = vb.xyz[k];
+				B[1][k] = 0.5f * ( va.xyz[k] + vb.xyz[k] );
+			}
+			for ( int k = 0; k < 2; k++ )
+			{
+				Bst[0][k] = va.st[k];
+				Bst[2][k] = vb.st[k];
+				Bst[1][k] = 0.5f * ( va.st[k] + vb.st[k] );
+			}
+			Gcu[0] = va.cu;
+			Gcu[2] = vb.cu;
+			Gcu[1] = 0.5f * ( va.cu + vb.cu );
+			Gcv[0] = va.cv;
+			Gcv[2] = vb.cv;
+			Gcv[1] = 0.5f * ( va.cv + vb.cv );
+			segPiece_t pc;
+			pc.width = pc.height = 3;
+			pc.c.resize( 9 );
+			for ( int x = 0; x < 3; x++ )
+			{
+				// the middle row: the curve from the edge to the middle point passes through the surface half way
+				float S[3], Sst[2];
+				Seat_GridEval( g, ring, 0.5f * ( Gcu[x] + ccu ), 0.5f * ( Gcv[x] + ccv ), S, Sst );
+				segPoint_t &p0 = pc.c[x * 3 + 0], &p1 = pc.c[x * 3 + 1], &p2 = pc.c[x * 3 + 2];
+				for ( int k = 0; k < 3; k++ )
+				{
+					p0.xyz[k] = B[x][k];
+					p2.xyz[k] = C[k];
+					p1.xyz[k] = 2.0f * S[k] - 0.5f * ( B[x][k] + C[k] );
+				}
+				for ( int k = 0; k < 2; k++ )
+				{
+					p0.st[k] = Bst[x][k];
+					p2.st[k] = Cst[k];
+					p1.st[k] = 2.0f * Sst[k] - 0.5f * ( Bst[x][k] + Cst[k] );
+				}
+			}
+			made.push_back( pc );
+		}
+	}
+	out.insert( out.end(), made.begin(), made.end() );
+	return true;
+}
+
 // Curve > Extract Cut Piece: the selected patches are the cutter. Where its hull cuts a hole in a host, what was taken
 // out is made again as ordinary patches (one group, facing and textured like the host). They are copies: the hole stays
 // as it is, because it follows the cutter, so the piece can be moved, turned or used as a hatch without touching it.
@@ -667,6 +862,7 @@ int Seat_ExtractPiece(){
 	std::vector<segPiece_t> pieces;
 	std::vector<patchMesh_t*> pieceHost;
 	int nHosts = 0;
+	bool simple = false;
 	for ( size_t i = 0; i < hosts.size(); i++ )
 	{
 		patchMesh_t *host = hosts[i];
@@ -681,10 +877,14 @@ int Seat_ExtractPiece(){
 		std::vector<segFrag_t> frags;
 		Seat_Inside( *g, host->seat[hullOf[i]], rects, frags );
 		const size_t before = pieces.size();
-		for ( size_t r = 0; r < rects.size(); r++ )
-			SegPatch_RectPieces( *g, rects[r].u0, rects[r].u1, rects[r].v0, rects[r].v1, pieces );
-		for ( size_t f = 0; f < frags.size(); f++ )
-			SegPatch_FragPieces( frags[f], pieces );
+		if ( !Seat_Cookie( *g, host->seat[hullOf[i]], frags, pieces ) ) {
+			// the outline of the hole could not be followed: the cells inside the hull are copied as they are
+			simple = true;
+			for ( size_t r = 0; r < rects.size(); r++ )
+				SegPatch_RectPieces( *g, rects[r].u0, rects[r].u1, rects[r].v0, rects[r].v1, pieces );
+			for ( size_t f = 0; f < frags.size(); f++ )
+				SegPatch_FragPieces( frags[f], pieces );
+		}
 		if ( pieces.size() > before ) {
 			nHosts++;
 		}
@@ -738,8 +938,9 @@ int Seat_ExtractPiece(){
 		Select_Brush( made[i] );
 	UpdatePatchInspector();
 	Sys_UpdateWindows( W_ALL );
-	Sys_Printf( "Extract Cut Piece: %d patch(es) from %d host patch(es), %s. The hole stays where the cutter is.\n", (int)made.size(), nHosts,
-				gid ? "one group (move it with the selection)" : "selected" );
+	Sys_Printf( "Extract Cut Piece: %d patch(es) from %d host patch(es), %s%s. The hole stays where the cutter is.\n", (int)made.size(), nHosts,
+				gid ? "one group (move it with the selection)" : "selected",
+				simple ? "; the outline of a hole could not be followed there, so the cells inside it were copied as they are" : "" );
 	return (int)made.size();
 }
 

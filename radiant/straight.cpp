@@ -29,6 +29,8 @@ struct patchSnap_t
 	int hasFrame;
 	float frameR[9];
 	float cog[COG_NPARAM];
+	int lnkHasF;
+	float lnkF[12];
 };
 static std::vector<patchSnap_t> g_stSnap;
 static std::vector<brush_t*> g_stMovedIn;       // brushes Suspend selected, Resume puts them back
@@ -290,6 +292,8 @@ bool Straight_Suspend(){
 			s.hasFrame = b->pPatch->hasFrame;
 			memcpy( s.frameR, b->pPatch->frameR, sizeof( s.frameR ) );
 			memcpy( s.cog, b->pPatch->cog, sizeof( s.cog ) );
+			s.lnkHasF = b->pPatch->lnkHasF;
+			memcpy( s.lnkF, b->pPatch->lnkF, sizeof( s.lnkF ) );
 			g_stSnap.push_back( s );
 		}
 		if ( !IsBrushSelected( b ) ) {
@@ -319,6 +323,8 @@ void Straight_Resume(){
 		s.p->hasFrame = s.hasFrame;
 		memcpy( s.p->frameR, s.frameR, sizeof( s.frameR ) );
 		memcpy( s.p->cog, s.cog, sizeof( s.cog ) );
+		s.p->lnkHasF = s.lnkHasF;
+		memcpy( s.p->lnkF, s.lnkF, sizeof( s.lnkF ) );
 		s.p->bDirty = true;
 		vec3_t vMin, vMax;
 		Patch_CalcBounds( s.p, vMin, vMax );

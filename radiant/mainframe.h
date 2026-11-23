@@ -197,6 +197,12 @@ struct SKeyInfo
 #define ID_CURVE_GROUPSPLIT             40361
 #define ID_CURVE_GROUPSELECT            40362
 #define ID_CURVE_STRAIGHTEDIT           40363
+#define ID_CURVE_ENT_SOURCE             40370
+#define ID_CURVE_ENT_INSTANCED          40371
+#define ID_CURVE_ENT_UNLINK             40372
+#define ID_CURVE_ENT_SELSOURCE          40373
+#define ID_CURVE_ENT_SELALL             40374
+#define ID_CURVE_ENT_OUTLINES           40375
 #define ID_VIEW_CENTERONSEL             40364
 #define ID_CURVE_BRIDGELOOPS            40365
 #define ID_CURVE_BEVELRECOG             40366
@@ -856,6 +862,12 @@ void OnCurveGroupMerge();
 void OnCurveGroupSplit();
 void OnCurveGroupSelect();
 void OnCurveStraightEdit();
+void OnCurveEntSource();
+void OnCurveEntInstanced();
+void OnCurveEntUnlink();
+void OnCurveEntSelSource();
+void OnCurveEntSelAll();
+void OnCurveEntOutlines();
 void OnCurveSegcap();
 void OnCurveSegcaptop();
 void OnCurveSegcapbot();

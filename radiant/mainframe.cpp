@@ -31,6 +31,7 @@
 #include "patchgroup.h"
 #include "straight.h"
 #include "seatcut.h"
+#include "entangle.h"
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
 #include <gdk/gdkkeysyms.h>
@@ -659,6 +660,12 @@ gint HandleCommand( GtkWidget *widget, gpointer data ){
 		  case ID_CURVE_GROUPSPLIT: g_pParentWnd->OnCurveGroupSplit(); break;
 		  case ID_CURVE_GROUPSELECT: g_pParentWnd->OnCurveGroupSelect(); break;
 		  case ID_CURVE_STRAIGHTEDIT: g_pParentWnd->OnCurveStraightEdit(); break;
+		  case ID_CURVE_ENT_SOURCE: g_pParentWnd->OnCurveEntSource(); break;
+		  case ID_CURVE_ENT_INSTANCED: g_pParentWnd->OnCurveEntInstanced(); break;
+		  case ID_CURVE_ENT_UNLINK: g_pParentWnd->OnCurveEntUnlink(); break;
+		  case ID_CURVE_ENT_SELSOURCE: g_pParentWnd->OnCurveEntSelSource(); break;
+		  case ID_CURVE_ENT_SELALL: g_pParentWnd->OnCurveEntSelAll(); break;
+		  case ID_CURVE_ENT_OUTLINES: g_pParentWnd->OnCurveEntOutlines(); break;
 		  case ID_CURVE_SEGCAP: g_pParentWnd->OnCurveSegcap(); break;
 		  case ID_CURVE_SEGCAPTOP: g_pParentWnd->OnCurveSegcaptop(); break;
 		  case ID_CURVE_SEGCAPBOT: g_pParentWnd->OnCurveSegcapbot(); break;
@@ -1679,6 +1686,13 @@ void MainFrame::create_main_menu( GtkWidget *window, GtkWidget *vbox ){
 		create_menu_item_with_mnemonic( menu, _( "Select Whole Group" ), G_CALLBACK( HandleCommand ), ID_CURVE_GROUPSELECT );
 		create_menu_item_with_mnemonic( menu, _( "Straight Edit (rotated object)" ), G_CALLBACK( HandleCommand ), ID_CURVE_STRAIGHTEDIT );
 		menu_separator( menu );
+		create_menu_item_with_mnemonic( menu, _( "Entangle: Make Source" ), G_CALLBACK( HandleCommand ), ID_CURVE_ENT_SOURCE );
+		create_menu_item_with_mnemonic( menu, _( "Entangle: Make Instanced (source + copies selected)" ), G_CALLBACK( HandleCommand ), ID_CURVE_ENT_INSTANCED );
+		create_menu_item_with_mnemonic( menu, _( "Entangle: Unlink" ), G_CALLBACK( HandleCommand ), ID_CURVE_ENT_UNLINK );
+		create_menu_item_with_mnemonic( menu, _( "Entangle: Select Source" ), G_CALLBACK( HandleCommand ), ID_CURVE_ENT_SELSOURCE );
+		create_menu_item_with_mnemonic( menu, _( "Entangle: Select All Linked" ), G_CALLBACK( HandleCommand ), ID_CURVE_ENT_SELALL );
+		create_menu_item_with_mnemonic( menu, _( "Entangle: Show / Hide Outlines" ), G_CALLBACK( HandleCommand ), ID_CURVE_ENT_OUTLINES );
+		menu_separator( menu );
 		create_menu_item_with_mnemonic( menu, _( "End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHENDCAP );
 		create_menu_item_with_mnemonic( menu, _( "Improved End cap" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHIMPROVEDENDCAP );
 		create_menu_item_with_mnemonic( menu, _( "Bevel" ), G_CALLBACK( HandleCommand ), ID_CURVE_PATCHBEVEL );
@@ -2144,6 +2158,10 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 								 new_image_icon("seg_toggle.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_ROUNDDISPLAY ) );
 	g_object_set_data( G_OBJECT( window ), "tb_seg_toggle", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Restore Regular Corners" ), "",
+								 new_image_icon("regular_corners.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_REGULARSELECTED ) );
+	g_object_set_data( G_OBJECT( window ), "tb_regular_corners", w );
 	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Thicken Segmented..." ), "",
 								 new_image_icon("seg_thicken.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_SEGTHICKEN ) );
@@ -2180,6 +2198,14 @@ void MainFrame::create_main_toolbar( GtkWidget *window, GtkWidget *vbox ){
 								 new_image_icon("straight_edit.png"), G_CALLBACK( HandleCommand ),
 								 GINT_TO_POINTER( ID_CURVE_STRAIGHTEDIT ) );
 	g_object_set_data( G_OBJECT( window ), "tb_straight_edit", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Entangle: Make Source (copies made of it from now on follow its edits). On an entangled object: switch the link off" ), "",
+								 new_image_icon("ent_source.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_ENT_SOURCE ) );
+	g_object_set_data( G_OBJECT( window ), "tb_ent_source", w );
+	w = toolbar_append_item( GTK_TOOLBAR( toolbar ), "", _( "Entangle: Make Instanced (select the source and the copies that should follow it). On instances only: switch their link off" ), "",
+								 new_image_icon("ent_instanced.png"), G_CALLBACK( HandleCommand ),
+								 GINT_TO_POINTER( ID_CURVE_ENT_INSTANCED ) );
+	g_object_set_data( G_OBJECT( window ), "tb_ent_instanced", w );
 
 	/*
 	   uh? that is OLD
@@ -2370,10 +2396,12 @@ void Clipboard_PasteMap(){
 		Cog_ImportBegin();
 		Seat_ImportBegin();
 		PatchGroup_ImportBegin();
+		Entangle_ImportBegin();
 		Map_Import( &g_Clipboard, "xmap", true );
 		Cog_ImportEnd(); // a pasted or cloned cog is a cog of its own
 		Seat_ImportEnd(); // and so is a cutter
 		PatchGroup_ImportEnd(); // and so is a copy of a group
+		Entangle_ImportEnd(); // and a copy of an entangled object follows its source
 	}
 }
 
@@ -3361,6 +3389,7 @@ void MainFrame::Create(){
 	m_nTimer = g_timeout_add( 1000, timer, this );
 	SegPanel_Init();
 	Seat_Init();
+	Entangle_Init();
 }
 
 // =============================================================================
@@ -6994,6 +7023,30 @@ void MainFrame::OnCurveGroupSelect(){
 
 void MainFrame::OnCurveStraightEdit(){
 	Straight_Toggle();
+}
+
+void MainFrame::OnCurveEntSource(){
+	Entangle_MakeSource();
+}
+
+void MainFrame::OnCurveEntInstanced(){
+	Entangle_MakeInstanced();
+}
+
+void MainFrame::OnCurveEntUnlink(){
+	Entangle_Unlink();
+}
+
+void MainFrame::OnCurveEntSelSource(){
+	Entangle_SelectSource();
+}
+
+void MainFrame::OnCurveEntSelAll(){
+	Entangle_SelectAll();
+}
+
+void MainFrame::OnCurveEntOutlines(){
+	Entangle_ToggleOutlines();
 }
 
 void MainFrame::OnCurveSegtoggle(){

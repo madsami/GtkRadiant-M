@@ -456,6 +456,16 @@ typedef struct {
 	// deselecting a patch of a group selects or deselects all of them, so the group moves as one object.
 	// Saved in //@grp comment lines.
 	int groupId;
+	// entanglement (see entangle.h in the editor): lnkRole 0 = not entangled, 1 = part of the source of link lnkId,
+	// 2 = part of an instance of it. lnkInst numbers the instances of one link (0 for the source) and lnkIdx numbers
+	// the patches of one source / instance, so every patch of an instance has a partner in the source. Saved in
+	// //@lnk comment lines.
+	int lnkId, lnkRole, lnkInst, lnkIdx;
+	// the origin of a linked patch: lnkF = position (3 numbers) and the three axes (3 each) of a frame that moves, turns
+	// and scales with the whole object but not when single points are edited. The shape of a source, and so what its
+	// instances copy, is the control points in that frame. Saved with the link (//@lnk2).
+	int lnkHasF;
+	float lnkF[12];
 	// rotation frame (see rotframe.h in the editor): hasFrame = 1 when the patch has been turned off the grid by a
 	// rotation. frameR is the total rotation (3x3, row by row, new = R * old) that took it from its straight pose to
 	// where it is now, so turning the world by the inverse straightens it again. Saved in //@frm comment lines.

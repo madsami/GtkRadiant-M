@@ -253,6 +253,38 @@ void Patch_Parse( patchMesh_t *pPatch, bool bDef3 = false ){
 			GetToken( false );
 			pPatch->groupId = atoi( token );
 		}
+		else if ( !strcmp( token, "lnk" ) ) {
+			// entanglement (see entangle.h), put here by Segpatch_Preprocess from "//@lnk <id> <role> <inst> <idx>"
+			GetToken( false );
+			pPatch->lnkId = atoi( token );
+			GetToken( false );
+			pPatch->lnkRole = atoi( token );
+			GetToken( false );
+			pPatch->lnkInst = atoi( token );
+			GetToken( false );
+			pPatch->lnkIdx = atoi( token );
+		}
+		else if ( !strcmp( token, "lnk2" ) ) {
+			// entanglement with its origin (see entangle.h), from "//@lnk2 <id> <role> <inst> <idx> <n> <n numbers>"
+			GetToken( false );
+			pPatch->lnkId = atoi( token );
+			GetToken( false );
+			pPatch->lnkRole = atoi( token );
+			GetToken( false );
+			pPatch->lnkInst = atoi( token );
+			GetToken( false );
+			pPatch->lnkIdx = atoi( token );
+			GetToken( false );
+			const int nf = atoi( token );
+			for ( int k = 0; k < nf; k++ )
+			{
+				GetToken( false );
+				if ( k < 12 ) {
+					pPatch->lnkF[k] = (float)atof( token );
+				}
+			}
+			pPatch->lnkHasF = ( nf == 12 ) ? 1 : 0;
+		}
 		else if ( !strcmp( token, "frm" ) ) {
 			// rotation frame (see rotframe.h), put here by Segpatch_Preprocess from "//@frm": the 9 numbers of the rotation
 			for ( int k = 0; k < 9; k++ )
@@ -689,6 +721,12 @@ static char* Segpatch_Preprocess( const char *buf ){
 	// The same for a patch in a group: "//@grp <id>" becomes "grp <id>" in front of the cog's numbers.
 	char grpText[32];
 	bool haveGrp = false;
+	// and the entanglement ( "//@lnk <id> <role> <inst> <idx>" becomes "lnk <id> <role> <inst> <idx>" ), see entangle.h
+	char lnkText[96];
+	bool haveLnk = false;
+	// "//@lnk2 <id> <role> <inst> <idx> <n> <numbers>" (with the origin of the patch) becomes "lnk2 <the same>"
+	const char *lnk2Text = NULL;
+	size_t lnk2Len = 0;
 	// and the rotation frame ( "//@frm <9 numbers>" becomes "frm <9 numbers>" )
 	const char *frmText = NULL;
 	size_t frmLen = 0;
@@ -704,6 +742,23 @@ static char* Segpatch_Preprocess( const char *buf ){
 		if ( !skipping && !strncmp( p, "//@grp ", 7 ) ) {
 			sprintf( grpText, "grp %i", atoi( p + 7 ) );
 			haveGrp = true;
+			p = next;
+			continue;
+		}
+		if ( !skipping && !strncmp( p, "//@lnk2 ", 8 ) ) {
+			lnk2Text = p + 8;
+			const char *e = nl ? nl : p + strlen( p );
+			while ( e > lnk2Text && ( e[-1] == '\r' || e[-1] == ' ' ) )
+				e--;
+			lnk2Len = e - lnk2Text;
+			p = next;
+			continue;
+		}
+		if ( !skipping && !strncmp( p, "//@lnk ", 7 ) ) {
+			int a = 0, b = 0, c = 0, d = 0;
+			sscanf( p + 7, "%d %d %d %d", &a, &b, &c, &d );
+			sprintf( lnkText, "lnk %i %i %i %i", a, b, c, d );
+			haveLnk = true;
 			p = next;
 			continue;
 		}
@@ -735,7 +790,7 @@ static char* Segpatch_Preprocess( const char *buf ){
 			p = next;
 			continue;
 		}
-		if ( !skipping && ( cogText || seatText || haveGrp || frmText ) ) {
+		if ( !skipping && ( cogText || seatText || haveGrp || haveLnk || lnk2Text || frmText ) ) {
 			const char *q = p;
 			while ( *q == ' ' || *q == '\t' )
 				q++;
@@ -763,6 +818,19 @@ static char* Segpatch_Preprocess( const char *buf ){
 					o += gl;
 					*o++ = ' ';
 				}
+				if ( lnk2Text ) {
+					memcpy( o, "lnk2 ", 5 );
+					o += 5;
+					memcpy( o, lnk2Text, lnk2Len );
+					o += lnk2Len;
+					*o++ = ' ';
+				}
+				if ( haveLnk ) {
+					const size_t ll = strlen( lnkText );
+					memcpy( o, lnkText, ll );
+					o += ll;
+					*o++ = ' ';
+				}
 				if ( frmText ) {
 					memcpy( o, "frm ", 4 );
 					o += 4;
@@ -786,6 +854,8 @@ static char* Segpatch_Preprocess( const char *buf ){
 				frmText = NULL;
 				seatText = NULL;
 				haveGrp = false;
+				haveLnk = false;
+				lnk2Text = NULL;
 				p = next;
 				continue;
 			}

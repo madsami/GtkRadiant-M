@@ -31,6 +31,7 @@
 #include <set>
 #include <vector>
 #include "segpatch.h"
+#include "entangle.h"
 #include "gtkmisc.h"
 
 #include "gtkr_list.h"
@@ -68,6 +69,7 @@ patchMesh_t* Patch_Alloc(){
 	pPatch->segH = pPatch->segV = 0;
 	pPatch->cogId = 0;
 	pPatch->groupId = 0;
+	pPatch->lnkId = pPatch->lnkRole = pPatch->lnkInst = pPatch->lnkIdx = pPatch->lnkHasF = 0;
 	pPatch->hasFrame = 0;
 	pPatch->seatId = pPatch->seatCount = pPatch->seatCanCut = 0;
 
@@ -90,6 +92,7 @@ patchMesh_t* MakeNewPatch(){
 	pm->segH = pm->segV = 0;
 	pm->cogId = 0;
 	pm->groupId = 0;
+	pm->lnkId = pm->lnkRole = pm->lnkInst = pm->lnkIdx = pm->lnkHasF = 0;
 	pm->hasFrame = 0;
 	pm->seatId = pm->seatCount = pm->seatCanCut = 0;
 
@@ -4635,6 +4638,7 @@ void Patch_Move( patchMesh_t *pm, const vec3_t vMove, bool bRebuild ){
 		}
 	}
 	Patch_HintTranslate( pm, vMove );
+	Entangle_FrameMoved( pm, vMove ); // the origin of an entangled patch goes along
 	// bRebuild is never true
 	if ( bRebuild ) {
 		vec3_t vMin, vMax;
@@ -4673,6 +4677,7 @@ void Patch_ApplyMatrix( patchMesh_t *p, const vec3_t vOrigin, const vec3_t vMatr
 	}
 	if ( !( ( g_qeglobals.d_select_mode == sel_curvepoint && g_qeglobals.d_num_move_points != 0 ) || g_bPatchBendMode ) ) {
 		Patch_HintMatrix( p, vOrigin, vMatrix ); // whole patch transformed, the hint goes along
+		Entangle_FrameMatrix( p, vOrigin, vMatrix ); // and so does the origin of an entangled patch
 	}
 	vec3_t vMin, vMax;
 	Patch_CalcBounds( p, vMin, vMax );
@@ -4828,6 +4833,7 @@ void Patch_Scale( patchMesh_t *p, const vec3_t vOrigin, const vec3_t vAmt, bool 
 	}
 	if ( g_qeglobals.d_select_mode != sel_curvepoint ) {
 		Patch_HintScale( p, vOrigin, vAmt ); // whole patch scaled, the hint goes along
+		Entangle_FrameScaled( p, vOrigin, vAmt ); // and so does the origin of an entangled patch
 	}
 	if ( bRebuild ) {
 		vec3_t vMin, vMax;

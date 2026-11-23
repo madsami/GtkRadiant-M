@@ -89,6 +89,16 @@ static const char* Patch_ShaderForFile( patchMesh_t *pPatch ){
 	return str;
 }
 
+// The link of an entangled patch (see entangle.h): id, role, instance, member number, and the 12 numbers of its origin
+static void Link_Write( patchMesh_t *p, IDataStream *out ){
+	out->printf( "//@lnk2 %i %i %i %i %i ", p->lnkId, p->lnkRole, p->lnkInst, p->lnkIdx, p->lnkHasF ? 12 : 0 );
+	if ( p->lnkHasF ) {
+		for ( int c = 0; c < 12; c++ )
+			Float_Write( p->lnkF[c], out );
+	}
+	out->printf( "\n" );
+}
+
 // A segmented patch (see segpatch.h) is saved as its cage in comment lines (//@seg), which the
 // compilers ignore, followed by the generated pieces as ordinary patches, which they compile.
 // Map_Read turns the comment lines back into the cage and drops the pieces.
@@ -103,6 +113,9 @@ static bool SegPatch_Write( patchMesh_t *p, IDataStream *out ){
 
 	if ( p->groupId != 0 ) {
 		out->printf( "//@grp %i\n", p->groupId ); // see Primitive_Write
+	}
+	if ( p->lnkRole != 0 ) {
+		Link_Write( p, out ); // see Primitive_Write
 	}
 	if ( p->hasFrame ) {
 		out->printf( "//@frm " ); // the rotation frame, see Primitive_Write
@@ -273,6 +286,11 @@ void Primitive_Write( brush_t *pBrush, IDataStream *out ){
 		if ( pBrush->patchBrush && pBrush->pPatch->groupId != 0 && g_MapVersion == MAPVERSION_Q3 ) {
 			// a patch in a group: its id, in a comment line the compilers ignore (Map_Read puts it back)
 			out->printf( "//@grp %i\n", pBrush->pPatch->groupId );
+		}
+		if ( pBrush->patchBrush && pBrush->pPatch->lnkRole != 0 && g_MapVersion == MAPVERSION_Q3 ) {
+			// an entangled patch (see entangle.h): its link, role, instance and member number, in a comment line the
+			// compilers ignore (Map_Read puts them back)
+			Link_Write( pBrush->pPatch, out );
 		}
 		if ( pBrush->patchBrush && pBrush->pPatch->hasFrame && g_MapVersion == MAPVERSION_Q3 ) {
 			// a patch turned off the grid: the 9 numbers of its rotation (rotframe.h), in a comment line the compilers ignore

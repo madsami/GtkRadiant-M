@@ -56,6 +56,23 @@ void Patch_XMLParse( patchMesh_t *pPatch, xmlNodePtr surface ){
 				pPatch->groupId = atoi( str );
 				xmlFree( str );
 			}
+			str = (char *)xmlGetProp( current, (xmlChar *)"lnk" );
+			if ( str ) {
+				sscanf( str, "%d %d %d %d", &pPatch->lnkId, &pPatch->lnkRole, &pPatch->lnkInst, &pPatch->lnkIdx );
+				xmlFree( str );
+			}
+			str = (char *)xmlGetProp( current, (xmlChar *)"lnkf" );
+			if ( str ) {
+				char *fs = strtok( str, " " );
+				int k = 0;
+				for ( ; k < 12 && fs; k++ )
+				{
+					pPatch->lnkF[k] = (float)atof( fs );
+					fs = strtok( NULL, " " );
+				}
+				pPatch->lnkHasF = ( k == 12 ) ? 1 : 0;
+				xmlFree( str );
+			}
 			str = (char *)xmlGetProp( current, (xmlChar *)"frm" );
 			if ( str ) {
 				char *fs = strtok( str, " " );

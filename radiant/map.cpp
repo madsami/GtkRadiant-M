@@ -30,6 +30,7 @@
 #include "gtkmisc.h"
 #include "filters.h"
 #include "straight.h"
+#include "entangle.h"
 
 extern MainFrame* g_pParentWnd;
 
@@ -155,6 +156,7 @@ entity_t *Map_FindClass( const char *cname ){
  */
 void Map_Free( void ){
 	Straight_Reset(); // Straight Edit cannot outlive the map
+	Entangle_Reset();
 	g_bRestoreBetween = false;
 	if ( selected_brushes.next &&
 		 ( selected_brushes.next != &selected_brushes ) ) {

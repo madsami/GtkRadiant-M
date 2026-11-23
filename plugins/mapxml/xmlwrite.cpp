@@ -93,6 +93,17 @@ void Patch_XMLWrite( patchMesh_t *pPatch, xmlNodePtr surface ){
 		sprintf( buf, "%i", pPatch->groupId );
 		xmlSetProp( node, (xmlChar *)"grp", (xmlChar *)buf );
 	}
+	if ( pPatch->lnkRole != 0 ) {
+		sprintf( buf, "%i %i %i %i", pPatch->lnkId, pPatch->lnkRole, pPatch->lnkInst, pPatch->lnkIdx );
+		xmlSetProp( node, (xmlChar *)"lnk", (xmlChar *)buf );
+		if ( pPatch->lnkHasF ) {
+			char fbuf[12 * 24];
+			char *fo = fbuf;
+			for ( int k = 0; k < 12; k++ )
+				fo += sprintf( fo, k ? " %.9g" : "%.9g", pPatch->lnkF[k] );
+			xmlSetProp( node, (xmlChar *)"lnkf", (xmlChar *)fbuf );
+		}
+	}
 	if ( pPatch->hasFrame ) {
 		char frmbuf[9 * 24];
 		char *fo = frmbuf;

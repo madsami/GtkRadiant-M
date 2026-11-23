@@ -27,6 +27,7 @@
 
 #include "stdafx.h"
 #include "seatcut.h"
+#include "entangle.h"
 #include "rotframe.h"
 #include "straight.h"
 #include <gtk/gtk.h>
@@ -1683,6 +1684,9 @@ void CamWnd::Cam_Draw(){
 	qglDisable( GL_COLOR_MATERIAL );
 
 	qglEnable( GL_CULL_FACE );
+
+	// entangle outlines first: the selection and the active tool are drawn on top of them
+	Entangle_Draw();
 
 	brush_t* pList = ( g_bClipMode && g_pSplitList ) ? g_pSplitList : &selected_brushes;
 

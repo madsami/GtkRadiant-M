@@ -183,6 +183,7 @@
     <ClCompile Include="missing.cpp" />
     <ClCompile Include="bevel.cpp" />
     <ClCompile Include="cog.cpp" />
+    <ClCompile Include="entangle.cpp" />
     <ClCompile Include="patchgroup.cpp" />
     <ClCompile Include="rotframe.cpp" />
     <ClCompile Include="straight.cpp" />

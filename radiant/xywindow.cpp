@@ -27,6 +27,7 @@
 
 #include "stdafx.h"
 #include "seatcut.h"
+#include "entangle.h"
 #include "straight.h"
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
@@ -2993,6 +2994,8 @@ void XYWnd::XY_Draw(){
 		end2 = Sys_DoubleTime();
 	}
 
+	// entangle outlines first: everything that follows (the active tool, selection) is drawn on top of them
+	Entangle_Draw();
 	BevelEdge_Draw();
 	Seat_Draw();
 	DrawPathLines();
